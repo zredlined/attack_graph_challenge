@@ -26,12 +26,14 @@ os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 # 1. Script Configuration & Dataclasses
 #####################################################################
 
+
 @dataclass
 class ScriptArguments:
     dataset_id_or_path: str = "meowterspace45/attack-graph-challenge"
     dataset_splits: str = "train"
     dataset_config_name: str = "simple"
     tokenizer_name_or_path: str = None
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,6 +48,7 @@ logger.propagate = False
 # 2. Stateful Simulator & Reward Functions
 #####################################################################
 
+
 def parse_actions_from_answer(answer_text: str) -> list:
     """Extract structured actions like tool(arg1, arg2)."""
     action_regex = re.compile(r"(\w+)\(([^)]+)\)")
@@ -56,6 +59,7 @@ def parse_actions_from_answer(answer_text: str) -> list:
         ]
         parsed_actions.append({"tool": tool, "args": args})
     return parsed_actions
+
 
 def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
     """
@@ -115,11 +119,7 @@ def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
 
         elif tool == "exploit" and len(args) == 2:
             cve = args[1]
-            if (
-                sim_state.get("known_vulns", {})
-                .get(target_host, {})
-                .get("cve") == cve
-            ):
+            if sim_state.get("known_vulns", {}).get(target_host, {}).get("cve") == cve:
                 is_valid_action = True
                 sim_state.setdefault("access", {})[target_host] = "admin"
                 step_result.update(
@@ -205,7 +205,11 @@ def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
             total_reward += 1.0
             break
 
-    return {"final_reward": max(total_reward, 0.0), "is_success": is_success, "trace": trace}
+    return {
+        "final_reward": max(total_reward, 0.0),
+        "is_success": is_success,
+        "trace": trace,
+    }
 
 
 _step_counter = 0
@@ -240,14 +244,18 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
                 rewards.append(0.0)
                 continue
 
-            sim_result = run_simulation(actions, initial_state, target="DomainController")
+            sim_result = run_simulation(
+                actions, initial_state, target="DomainController"
+            )
             rewards.append(sim_result["final_reward"])
 
             if sim_result["is_success"]:
                 batch_wins += 1
                 if os.environ.get("RANK", "0") == "0" and random.random() < 0.1:
                     os.makedirs("completion_samples", exist_ok=True)
-                    log_file = os.path.join("completion_samples", "simulation_traces.jsonl")
+                    log_file = os.path.join(
+                        "completion_samples", "simulation_traces.jsonl"
+                    )
                     with open(log_file, "a") as f:
                         log_entry = {
                             "completion": full_completion,
@@ -272,8 +280,10 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
 # 3. Custom Callback for Logging Metrics
 #####################################################################
 
+
 class AttackGraphMetricsCallback(TrainerCallback):
     """Custom callback to log win/loss statistics during GRPO training."""
+
     def __init__(self):
         self.win_loss_stats = {"wins": 0, "losses": 0, "total": 0}
 
@@ -286,12 +296,14 @@ class AttackGraphMetricsCallback(TrainerCallback):
             if new_total > 0 and logs is not None:
                 overall_win_rate = _win_loss_stats["wins"] / current_total
                 recent_win_rate = new_wins / new_total
-                logs.update({
-                    "attack_success/overall_win_rate": overall_win_rate,
-                    "attack_success/recent_win_rate": recent_win_rate,
-                    "attack_success/total_wins": _win_loss_stats["wins"],
-                    "attack_success/total_attempts": current_total,
-                })
+                logs.update(
+                    {
+                        "attack_success/overall_win_rate": overall_win_rate,
+                        "attack_success/recent_win_rate": recent_win_rate,
+                        "attack_success/total_wins": _win_loss_stats["wins"],
+                        "attack_success/total_attempts": current_total,
+                    }
+                )
                 logger.info(
                     f"Overall Win Rate: {overall_win_rate:.1%} | "
                     f"Recent: {recent_win_rate:.1%} | "
@@ -304,13 +316,16 @@ class AttackGraphMetricsCallback(TrainerCallback):
 # 4. Main Training Orchestration
 #####################################################################
 
+
 def get_checkpoint(training_args: GRPOConfig):
     if os.path.isdir(training_args.output_dir):
         return get_last_checkpoint(training_args.output_dir)
     return None
 
 
-def grpo_function(model_args: ModelConfig, script_args: ScriptArguments, training_args: GRPOConfig):
+def grpo_function(
+    model_args: ModelConfig, script_args: ScriptArguments, training_args: GRPOConfig
+):
     tokenizer = AutoTokenizer.from_pretrained(
         script_args.tokenizer_name_or_path or model_args.model_name_or_path,
         trust_remote_code=model_args.trust_remote_code,

@@ -33,12 +33,16 @@ test_actions = [
     {"tool": "exploit", "args": ["WebServer", "CVE-2025-0001"]},
     {"tool": "dump_creds", "args": ["WebServer"]},  # No creds expected here
     {"tool": "scan", "args": ["DBServer"]},
-    {"tool": "read_file", "args": ["DBServer", "/etc/passwd"]},  # Should find creds for DomainController
+    {
+        "tool": "read_file",
+        "args": ["DBServer", "/etc/passwd"],
+    },  # Should find creds for DomainController
     {"tool": "use_creds", "args": ["DomainController", "creds_for_DomainController"]},
 ]
 
 # --- Run the simulation ---
-from run_r1_grpo import run_simulation  # or ensure run_simulation is in the same file
+from run_r1_grpo import \
+    run_simulation  # or ensure run_simulation is in the same file
 
 result = run_simulation(test_actions, test_initial_state, target="DomainController")
 
@@ -52,4 +56,3 @@ for step in result["trace"]:
 
 print(f"Final reward: {result['final_reward']}")
 print(f"Success reaching DomainController? {result['is_success']}")
-
