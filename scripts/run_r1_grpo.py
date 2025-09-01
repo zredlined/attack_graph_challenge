@@ -42,146 +42,177 @@ handler.setFormatter(
 )
 logger.addHandler(handler)
 
-########################
-# Attack Graph Reward Functions
-########################
 
-def format_reward_func(completions, target, **kwargs):
+#####################################################################
+# Attack Graph Reward Functions (Stateful Simulator Implementation)
+#####################################################################
+import re
+import json
+import copy 
+
+def parse_actions_from_answer(answer_text: str) -> list:
     """
-    Rewards completions that follow the correct format:
-    <think>...</think><answer>...</answer>
+    Parses an LLM's free-form text answer into a structured list of actions.
+    Example: "First I will scan(WebServer)." -> [{'tool': 'scan', 'args': ['WebServer']}]
+    """
+    # Regex to find function-like calls, e.g., scan(WebServer) or exploit(DBServer, PrivEsc-CVE)
+    action_regex = re.compile(r"(\w+)\(([^)]+)\)")
+    parsed_actions = []
+    for match in action_regex.finditer(answer_text):
+        tool = match.group(1).strip()
+        # Split args by comma and strip whitespace
+        args = [arg.strip() for arg in match.group(2).split(',')]
+        parsed_actions.append({"tool": tool, "args": args})
+    return parsed_actions
+
+def run_simulation(actions: list, initial_state: dict) -> dict:
+    """
+    Simulates the game step-by-step based on a list of parsed actions.
+    This is the core of the stateful reward function.
+    """
+    sim_state = copy.deepcopy(initial_state["agent_start"])
+    scenario = initial_state["scenario"]
     
-    Args:
-        completions (list[str]): Generated outputs
-        target (list[str]): Expected targets (always "Domain Admin Access")
-      
-    Returns:
-        list[float]: Reward scores (1.0 for correct format, 0.0 otherwise)
-    """
-    rewards = []
+    total_reward = 0.0
+    is_success = False
+    trace = []
 
-    for completion, gt in zip(completions, target):
-        try:
-            # Add synthetic <think> as it's already part of the prompt and prefilled
-            completion = "<think>" + completion
-            
-            if random.random() < 0.01:  # 1% chance to log samples
-                os.makedirs("completion_samples", exist_ok=True)
-                log_file = os.path.join("completion_samples", "completion_samples.txt")
-                with open(log_file, "a") as f:
-                    f.write(f"\n\n==============\n")
-                    f.write(completion)
-            
-            # Check if the format is correct
-            regex = r"^<think>([^<]*(?:<(?!/?think>)[^<]*)*)<\/think>\n<answer>([\s\S]*?)<\/answer>$"
-            match = re.search(regex, completion, re.DOTALL) 
-            
-            if match is None or len(match.groups()) != 2:
-                rewards.append(0.0)
+    for i, action in enumerate(actions):
+        tool = action.get("tool")
+        args = action.get("args", [])
+        action_str = f"{tool}({', '.join(args)})"
+        step_result = {
+            "step": i + 1, "action": action_str, "is_valid": False,
+            "outcome": "Action invalid or failed.", "step_reward": 0.0
+        }
+
+        # --- Action Validity & State Update Logic ---
+        is_valid_action = False
+        target = args[0] if args else ""
+
+        # Check if the target is known (prevents guessing)
+        if target and target not in sim_state["known_hosts"]:
+            step_result["outcome"] = f"Action failed: Host '{target}' is unknown."
+            trace.append(step_result)
+            total_reward -= 0.5 # Penalty for acting on unknown hosts
+            break
+
+        if tool == "scan" and len(args) == 1:
+            is_valid_action = True
+            # Reveal vulnerabilities or misconfigs on the scanned host
+            vulns = scenario.get("vulnerabilities", {}).get(target)
+            if vulns:
+                sim_state.setdefault("known_vulns", {})[target] = vulns
+                step_result["outcome"] = f"Scan successful. Found: {vulns}"
+                step_result["step_reward"] = 0.1
             else:
-                rewards.append(1.0)
-        except Exception:
-            rewards.append(0.0)
-    return rewards
+                step_result["outcome"] = "Scan successful. No new vulnerabilities found."
+                step_result["step_reward"] = 0.05 # Small reward for exploring
+        
+        elif tool == "exploit" and len(args) == 2:
+            cve_arg = args[1]
+            # Check if host is known to be vulnerable to this CVE
+            if sim_state.get("known_vulns", {}).get(target, {}).get("cve") == cve_arg:
+                is_valid_action = True
+                sim_state.setdefault("access", {})[target] = "admin"
+                step_result["outcome"] = f"Exploit successful. Gained admin access on {target}."
+                step_result["step_reward"] = 0.5 # High reward for privesc
+        
+        elif tool == "read_file" and len(args) == 1:
+             # In our scenarios, this is tied to finding a misconfig
+            if sim_state.get("known_vulns", {}).get(target, {}).get("misconfiguration"):
+                 is_valid_action = True
+                 creds_for = scenario.get("secrets", {}).get(target, {}).get("contains_creds_for")
+                 if creds_for:
+                     sim_state.setdefault("known_creds", []).append(f"creds_for_{creds_for}")
+                     sim_state.setdefault("known_hosts", []).append(creds_for)
+                     step_result["outcome"] = f"File read successful. Found credentials for {creds_for}."
+                     step_result["step_reward"] = 0.3 # High reward for finding creds
+        
+        elif tool == "dump_creds" and len(args) == 1:
+            # Requires admin access
+            if sim_state.get("access", {}).get(target) == "admin":
+                is_valid_action = True
+                creds_for = scenario.get("secrets", {}).get(target, {}).get("contains_creds_for")
+                if creds_for:
+                    sim_state.setdefault("known_creds", []).append(f"creds_for_{creds_for}")
+                    sim_state.setdefault("known_hosts", []).append(creds_for)
+                    step_result["outcome"] = f"Credential dump successful. Found credentials for {creds_for}."
+                    step_result["step_reward"] = 0.4 # High reward for finding creds
+        
+        # Add other tool logic here (e.g., password_spray) if needed
+
+        if is_valid_action:
+            step_result["is_valid"] = True
+            total_reward += step_result["step_reward"]
+            trace.append(step_result)
+        else:
+            trace.append(step_result)
+            total_reward -= 0.5 # Heavy penalty for invalid actions
+            break # Stop simulation on first error
+
+    # --- Final Goal Check ---
+    if sim_state.get("access", {}).get("DomainController") == "admin":
+        is_success = True
+        total_reward += 1.0 # Big bonus for winning the game
+        
+    return {
+        "final_reward": max(total_reward, 0.0), # Ensure reward is non-negative
+        "is_success": is_success,
+        "trace": trace
+    }
 
 def attack_success_reward_func(completions, target, initial_states, **kwargs):
     """
-    Rewards completions that successfully achieve Domain Admin Access.
-    
-    This is a simplified reward function that checks if the completion:
-    1. Follows the correct action sequence format
-    2. Contains the necessary steps to achieve the goal
-    3. Ends with gaining Domain Admin Access
-    
-    Args:
-        completions (list[str]): Generated outputs
-        target (list[str]): Expected targets (always "Domain Admin Access")
-        initial_states (list[str]): JSON strings of initial game states
-    
-    Returns:
-        list[float]: Reward scores (1.0 for success, 0.0 for failure)
+    Orchestrates the simulation-based reward calculation and logging.
+    This function replaces the old heuristic-based reward function.
     """
     rewards = []
     
-    for completion, gt, initial_state_str in zip(completions, target, initial_states):
+    for completion, initial_state_str in zip(completions, initial_states):
         try:
-            # Add synthetic <think> as it's already part of the prompt
-            completion = "<think>" + completion
+            # Add synthetic <think> as it's part of the prompt
+            full_completion = "<think>" + completion
             
-            # Parse the initial state
-            initial_state = json.loads(initial_state_str)
-            solution_path = initial_state.get("metadata", {}).get("solution_path", "")
-            
-            # Extract the answer section
-            answer_match = re.search(r"<answer>([\s\S]*?)<\/answer>", completion)
+            # 1. First, check for basic format compliance
+            answer_match = re.search(r"<answer>([\s\S]*?)<\/answer>", full_completion)
             if not answer_match:
                 rewards.append(0.0)
                 continue
-                
-            answer = answer_match.group(1).strip()
+            answer_text = answer_match.group(1).strip()
+
+            # 2. Parse the plan from the answer
+            actions = parse_actions_from_answer(answer_text)
+            if not actions: # Penalize if no parsable actions are found
+                rewards.append(0.0)
+                continue
+
+            # 3. Run the simulation
+            initial_state = json.loads(initial_state_str)
+            sim_result = run_simulation(actions, initial_state)
             
-            # Simple heuristic-based reward function
-            # In a full implementation, you'd simulate the environment
-            reward = calculate_attack_reward(answer, solution_path, initial_state)
-            rewards.append(reward)
-            
-            if reward > 0.8 and random.random() < 0.10:  # 10% chance to log successful attempts
+            # 4. Append the final reward
+            rewards.append(sim_result["final_reward"])
+
+            # 5. Log successful traces for later analysis
+            if sim_result["is_success"]:
                 os.makedirs("completion_samples", exist_ok=True)
-                log_file = os.path.join("completion_samples", "success_completion_samples.txt")
+                log_file = os.path.join("completion_samples", "simulation_traces.jsonl")
                 with open(log_file, "a") as f:
-                    f.write(f"\n\n============== SUCCESS (Reward: {reward}) ==============\n")
-                    f.write(f"Solution Path: {solution_path}\n")
-                    f.write(completion)
-                    
+                    log_entry = {
+                        "completion": full_completion,
+                        "initial_state": initial_state,
+                        "simulation_trace": sim_result["trace"],
+                        "final_reward": sim_result["final_reward"]
+                    }
+                    f.write(json.dumps(log_entry) + "\n")
+
         except Exception as e:
-            logger.debug(f"Error in attack_success_reward_func: {e}")
+            # logger is defined in your main script
+            # logger.debug(f"Error in reward function: {e}")
             rewards.append(0.0)
             
     return rewards
-
-def calculate_attack_reward(answer: str, solution_path: str, initial_state: dict) -> float:
-    """
-    Calculate reward based on the quality of the attack sequence.
-    
-    This is a simplified heuristic function. In a full implementation,
-    you would simulate the environment step by step.
-    """
-    answer_lower = answer.lower()
-    
-    # Base reward for attempting actions
-    reward = 0.0
-    
-    # Check for key cybersecurity actions
-    actions_found = 0
-    required_actions = ["scan", "exploit", "read_file", "dump_creds"]
-    
-    for action in required_actions:
-        if action in answer_lower:
-            actions_found += 1
-    
-    reward += actions_found * 0.15  # 0.15 per action found
-    
-    # Bonus for following a logical sequence based on solution path
-    if solution_path == "exploit_path":
-        if "exploit" in answer_lower and "sqli" in answer_lower:
-            reward += 0.2
-        if "privesc" in answer_lower:
-            reward += 0.2
-    elif solution_path == "misconfig_path":
-        if "config" in answer_lower and "readable" in answer_lower:
-            reward += 0.2
-        if "password" in answer_lower and "weak" in answer_lower:
-            reward += 0.2
-    
-    # Bonus for mentioning the goal
-    if "domain admin" in answer_lower or "domaincontroller" in answer_lower:
-        reward += 0.2
-    
-    # Bonus for sequential thinking (multiple steps)
-    steps = answer_lower.count("step") + answer_lower.count("then") + answer_lower.count("next")
-    reward += min(steps * 0.05, 0.15)  # Up to 0.15 bonus for showing steps
-    
-    return min(reward, 1.0)  # Cap at 1.0
 
 ########################
 # Helper functions
@@ -302,7 +333,7 @@ Plan your attack step by step to achieve the goal."""
 
     trainer = GRPOTrainer(
         model=model_args.model_name_or_path,
-        reward_funcs=[format_reward_func, attack_success_reward_func],
+        reward_funcs=[attack_success_reward_func],
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=test_dataset,
