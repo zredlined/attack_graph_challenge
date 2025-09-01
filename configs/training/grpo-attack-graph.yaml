@@ -9,7 +9,7 @@ tf32: true
 output_dir: runs/qwen-2.5-3b-attack-graph
 
 # Dataset arguments
-dataset_id_or_path: meowterspace45/attack-graph-challenge
+dataset_id_or_path: meowterspace45/attack_graph_challenge
 dataset_config_name: simple  # Start with simple difficulty
 
 # Training arguments
