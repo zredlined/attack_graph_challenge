@@ -1,0 +1,20 @@
+# PyTorch and utilities
+torch==2.5.1
+tensorboard
+setuptools<71.0.0
+
+# Flash attention for efficient transformers
+flash-attn
+
+# Hugging Face ecosystem
+transformers==4.48.1
+datasets==3.1.0
+accelerate==1.3.0
+hf-transfer==0.1.9
+trl==0.14.0
+
+# Distributed training
+deepspeed==0.15.4
+
+# Fast generation with vLLM
+vllm==0.7.0
