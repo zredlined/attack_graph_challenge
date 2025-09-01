@@ -10,10 +10,14 @@ from huggingface_hub import login
 GOAL = "DomainController"
 HOSTS = ["WebServer", "DBServer", "DomainController"]
 
+# Added specific CVEs and a filename for the misconfiguration
 VULNERABILITIES = {
-    "exploit": {"cve": "SQLi-CVE"},
-    "misconfig": {"misconfiguration": "Readable-Config-File"},
-    "privesc": {"cve": "PrivEsc-CVE"},
+    "exploit": {"cve": "CVE-2024-SQLi"},
+    "misconfig": {
+        "misconfiguration": "Readable-Config-File",
+        "file": "config.json"  # <-- Added specific filename
+    },
+    "privesc": {"cve": "CVE-2024-PrivEsc"},
     "weak_pw": {"misconfiguration": "Weak-Service-Password"}
 }
 SECRETS = {
@@ -34,7 +38,7 @@ def generate_attack_graph_dataset(num_samples: int, difficulty: str):
     dataset = []
 
     for _ in tqdm(range(num_samples), desc=f"Generating '{difficulty}' Scenarios"):
-        # --- MODIFIED: Select attack paths based on difficulty ---
+        # --- Select attack paths based on difficulty ---
         if difficulty == 'simple':
             attack_paths = ['exploit_path', 'misconfig_path']
         else:  # complex
@@ -61,7 +65,7 @@ def generate_attack_graph_dataset(num_samples: int, difficulty: str):
             vulnerabilities["DBServer"] = VULNERABILITIES["weak_pw"]
             secrets["DBServer"] = SECRETS["db_to_dc"]
 
-        # --- MODIFIED: Noise generation is now conditional on difficulty ---
+        # --- Noise generation is now conditional on difficulty ---
         if difficulty == 'simple':
             # Static, predictable noise for the baseline challenge
             noise = {
