@@ -1,4 +1,4 @@
-# GRPO Attack Graph Challenge - AI Agent Cybersecurity Training
+# GRPO Attack Graph Challenge - AI Agent Cybersecurity Reasoning Training
 
 Training autonomous AI agents to perform cybersecurity penetration testing using Group Relative Policy Optimization (GRPO). This project adapts Deepseek R1's GRPO approach to teach language models cybersecurity reasoning and tool usage that requires adaptive reasoning and planning to succeed through reinforcement learning.
 
@@ -270,15 +270,6 @@ Adapted from the original DeepSeek R1 experiment:
 
 ## Monitoring Training Progress
 
-### Real-Time Metrics Dashboard
-```bash
-# Launch the custom training monitor
-python scripts/monitor_training.py
-
-# Or with custom settings
-python scripts/monitor_training.py --log_dir runs --refresh 15
-```
-
 ### TensorBoard Metrics
 ```bash
 # Traditional tensorboard view
@@ -330,6 +321,7 @@ ls -la completion_samples/
 - **Minimum**: 1x GPU with 24GB VRAM (slow, not recommended)
 - **Recommended**: 8x H100 80GB (optimal performance)
 - **Budget**: 4x RTX 4090 24GB (reasonable performance)
+- **Setup used for test**: 8x L40 GPU with 40GB RAM (About 5 hours for training with full model weights)
 
 ## Important Notes
 
@@ -340,6 +332,7 @@ ls -la completion_samples/
 
 ## Credits
 
+- **DeepSeek-R1 GRPO Paper**: [Incentivizing Reasoning Capability in LLMs via Reinforcement Learning](https://arxiv.org/pdf/2501.12948v1)
 - **Original approach**: [TinyZero](https://github.com/Jiayi-Pan/TinyZero) by Jiayi Pan
 - **Distributed implementation**: [Phil Schmid](https://www.philschmid.de/deepseek-r1-reproduction)
 - **Attack graph methodology**: Inspired by MITRE ATT&CK framework
