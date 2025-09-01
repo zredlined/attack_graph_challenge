@@ -147,10 +147,10 @@ and contains credentials for DBServer. Let me plan the attack chain:
 <answer>
 Step 1: scan(WebServer)
 Step 2: read_file(WebServer, config.txt) # Extract DBServer credentials
-Step 3: password_spray(DBServer, extracted_credentials)  
-Step 4: password_spray(DBServer, weak_service_password) # Escalate to admin
+Step 3: use_creds(DBServer, extracted_credentials)  
+Step 4: use_creds(DBServer, weak_service_password) # Escalate to admin
 Step 5: dump_creds(DBServer) # Requires admin access
-Step 6: password_spray(DomainController, dumped_credentials)
+Step 6: use_creds(DomainController, dumped_credentials)
 Result: Domain Admin Access achieved
 </answer>
 ```
@@ -190,7 +190,7 @@ Now we can run the training and see if the agent actually learns these behaviors
 - `scan(host)`: Discover vulnerabilities and readable files
 - `exploit(host, cve)`: Exploit CVEs to gain admin privileges
 - `read_file(host, file)`: Extract credentials from configuration files
-- `password_spray(host, creds)`: Authenticate with discovered credentials
+- `use_creds(host, creds)`: Authenticate with discovered credentials
 - `dump_creds(host)`: Extract stored credentials (requires admin access)
 
 ### Learning Objectives
