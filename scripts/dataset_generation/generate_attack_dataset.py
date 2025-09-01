@@ -7,7 +7,7 @@ from datasets import Dataset
 from huggingface_hub import login
 
 # --- Game Configuration ---
-GOAL = "Domain Admin Access"
+GOAL = "DomainController"
 HOSTS = ["WebServer", "DBServer", "DomainController"]
 
 VULNERABILITIES = {
@@ -134,7 +134,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_file", type=str, default=None, help="Optional: Specify output file name.")
     parser.add_argument("--upload_to_hf", action="store_true", help="Upload dataset to Hugging Face Hub")
     parser.add_argument("--hf_username", type=str, default=None, help="Hugging Face username (optional)")
-    parser.add_argument("--dataset_name", type=str, default="attack-graph-challenge", help="Dataset name for HF Hub")
+    parser.add_argument("--dataset_name", type=str, default="attack_graph_challenge", help="Dataset name for HF Hub")
     args = parser.parse_args()
 
     # --- Auto-generate filename if not provided ---

@@ -57,15 +57,14 @@ def parse_actions_from_answer(answer_text: str) -> list:
         parsed_actions.append({"tool": tool, "args": args})
     return parsed_actions
 
-
 def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
     """
-    Revised simulation:
-    - scan(host): enumerate vulns, chance to discover hosts
+    Simulation:
+    - scan(host): enumerate vulns, discover host if in scenario
     - exploit(host, cve): admin if vuln matches
-    - read_file(host, file): works with admin OR misconfig
+    - read_file(host, file): requires known host and admin or misconfig
     - dump_creds(host): requires admin, yields creds
-    - use_creds(host, creds): requires creds, yields user access
+    - use_creds(host, creds): requires known host and known creds
     Success = admin on `target`
     """
 
@@ -81,7 +80,7 @@ def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
             "action": action_str,
             "is_valid": False,
             "outcome": "Action invalid or failed.",
-            "step_reward": -0.1,  # small penalty by default
+            "step_reward": -0.1,
         }
 
         is_valid_action = False
@@ -102,16 +101,17 @@ def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
                         outcome="Scan successful. No new vulnerabilities found.",
                         step_reward=0.05,
                     )
-                # Optional: discover new host from network links
+                # Discover linked hosts with a 20% chance
                 links = scenario.get("network_links", {}).get(target_host, [])
-                if links and random.random() < 0.2:  # 20% chance
-                    new_host = random.choice(links)
-                    if new_host not in sim_state.get("known_hosts", []):
-                        sim_state.setdefault("known_hosts", []).append(new_host)
-                        step_result.update(
-                            outcome=f"{step_result['outcome']} Also discovered host {new_host}.",
-                            step_reward=step_result["step_reward"] + 0.2,
-                        )
+                if links:
+                    for new_host in links:
+                        if new_host not in sim_state.get("known_hosts", []):
+                            if random.random() < 0.2:
+                                sim_state.setdefault("known_hosts", []).append(new_host)
+                                step_result.update(
+                                    outcome=f"{step_result['outcome']} Also discovered host {new_host}.",
+                                    step_reward=step_result["step_reward"] + 0.2,
+                                )
 
         elif tool == "exploit" and len(args) == 2:
             cve = args[1]
@@ -195,21 +195,17 @@ def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
             step_result["is_valid"] = True
             total_reward += step_result["step_reward"]
         else:
-            total_reward += step_result["step_reward"]  # small penalty
+            total_reward += step_result["step_reward"]
 
         trace.append(step_result)
 
-        # Check success condition
+        # Check for success
         if sim_state.get("access", {}).get(target) == "admin":
             is_success = True
             total_reward += 1.0
             break
 
-    return {
-        "final_reward": max(total_reward, 0.0),
-        "is_success": is_success,
-        "trace": trace,
-    }
+    return {"final_reward": max(total_reward, 0.0), "is_success": is_success, "trace": trace}
 
 
 _step_counter = 0
@@ -219,7 +215,6 @@ _win_loss_stats = {"wins": 0, "losses": 0, "total": 0}
 def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
     """Simulation-based reward function."""
     global _step_counter, _win_loss_stats
-
     prompts = kwargs.get("prompts") or [""] * len(completions)
     rewards = []
     batch_wins, batch_total = 0, len(completions)
@@ -229,8 +224,10 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
         prompt = prompts[i]
         try:
             prompt_parts = prompt.split("---END_OF_PROMPT---")
-            initial_state_str = prompt_parts[1]
-            initial_state = json.loads(initial_state_str)
+            if len(prompt_parts) < 2:
+                rewards.append(0.0)
+                continue
+            initial_state = json.loads(prompt_parts[1])
 
             full_completion = "<think>" + completion
             answer_match = re.search(r"<answer>([\s\S]*?)<\/answer>", full_completion)
@@ -243,23 +240,21 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
                 rewards.append(0.0)
                 continue
 
-            target = initial_state.get("target", "DomainController")
-            sim_result = run_simulation(actions, initial_state, target)
+            sim_result = run_simulation(actions, initial_state, target="DomainController")
             rewards.append(sim_result["final_reward"])
 
             if sim_result["is_success"]:
                 batch_wins += 1
                 if os.environ.get("RANK", "0") == "0" and random.random() < 0.1:
                     os.makedirs("completion_samples", exist_ok=True)
-                    log_file = os.path.join(
-                        "completion_samples", "simulation_traces.jsonl"
-                    )
+                    log_file = os.path.join("completion_samples", "simulation_traces.jsonl")
                     with open(log_file, "a") as f:
                         log_entry = {
                             "completion": full_completion,
                             "initial_state": initial_state,
                             "simulation_trace": sim_result["trace"],
                             "final_reward": sim_result["final_reward"],
+                            "final_state": sim_result["final_state"],
                         }
                         f.write(json.dumps(log_entry) + "\n")
         except Exception as e:
@@ -272,11 +267,13 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
     _step_counter += 1
     return rewards
 
+
 #####################################################################
 # 3. Custom Callback for Logging Metrics
 #####################################################################
 
 class AttackGraphMetricsCallback(TrainerCallback):
+    """Custom callback to log win/loss statistics during GRPO training."""
     def __init__(self):
         self.win_loss_stats = {"wins": 0, "losses": 0, "total": 0}
 
@@ -287,22 +284,21 @@ class AttackGraphMetricsCallback(TrainerCallback):
             new_total = current_total - self.win_loss_stats["total"]
             new_wins = _win_loss_stats["wins"] - self.win_loss_stats["wins"]
             if new_total > 0 and logs is not None:
-                win_rate, recent_win_rate = (
-                    _win_loss_stats["wins"] / current_total,
-                    new_wins / new_total,
-                )
-                logs.update(
-                    {
-                        "attack_success/overall_win_rate": win_rate,
-                        "attack_success/recent_win_rate": recent_win_rate,
-                        "attack_success/total_wins": _win_loss_stats["wins"],
-                        "attack_success/total_attempts": current_total,
-                    }
-                )
+                overall_win_rate = _win_loss_stats["wins"] / current_total
+                recent_win_rate = new_wins / new_total
+                logs.update({
+                    "attack_success/overall_win_rate": overall_win_rate,
+                    "attack_success/recent_win_rate": recent_win_rate,
+                    "attack_success/total_wins": _win_loss_stats["wins"],
+                    "attack_success/total_attempts": current_total,
+                })
                 logger.info(
-                    f"Overall Win Rate: {win_rate:.1%} | Recent: {recent_win_rate:.1%} | Total Wins: {_win_loss_stats['wins']}/{current_total}"
+                    f"Overall Win Rate: {overall_win_rate:.1%} | "
+                    f"Recent: {recent_win_rate:.1%} | "
+                    f"Total Wins: {_win_loss_stats['wins']}/{current_total}"
                 )
             self.win_loss_stats = _win_loss_stats.copy()
+
 
 #####################################################################
 # 4. Main Training Orchestration
@@ -314,9 +310,7 @@ def get_checkpoint(training_args: GRPOConfig):
     return None
 
 
-def grpo_function(
-    model_args: ModelConfig, script_args: ScriptArguments, training_args: GRPOConfig
-):
+def grpo_function(model_args: ModelConfig, script_args: ScriptArguments, training_args: GRPOConfig):
     tokenizer = AutoTokenizer.from_pretrained(
         script_args.tokenizer_name_or_path or model_args.model_name_or_path,
         trust_remote_code=model_args.trust_remote_code,
@@ -340,7 +334,7 @@ def grpo_function(
         )
         start_host, start_access = next(iter(agent_access.items()))
         scenario_desc = f"""You are a cybersecurity analyst conducting an authorized penetration test. 
-Your goal is to achieve admin access on {target}.
+Your goal is to achieve admin access on the DomainController.
 
 Current situation:
 - You have {start_access} access on {start_host}
@@ -375,7 +369,6 @@ Plan your attack step by step to achieve the goal."""
             r1_prefix, tokenize=False, add_generation_prompt=True
         )
         combined_prompt = f"{prompt_text}---END_OF_PROMPT---{initial_state_str}"
-
         return {"prompt": combined_prompt}
 
     dataset = dataset.map(
