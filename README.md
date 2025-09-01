@@ -334,7 +334,7 @@ ls -la completion_samples/
 
 - **DeepSeek-R1 GRPO Paper**: [Incentivizing Reasoning Capability in LLMs via Reinforcement Learning](https://arxiv.org/pdf/2501.12948v1)
 - **Original approach**: [TinyZero](https://github.com/Jiayi-Pan/TinyZero) by Jiayi Pan
-- **Distributed implementation**: [Phil Schmid](https://www.philschmid.de/deepseek-r1-reproduction)
+- **Distributed implementation**: [https://www.philschmid.de/deepseek-r1-reproduction](https://github.com/philschmid/deep-learning-pytorch-huggingface/blob/main/training/mini-deepseek-r1-aha-grpo.ipynb)
 - **Attack graph methodology**: Inspired by MITRE ATT&CK framework
 
 ## License
