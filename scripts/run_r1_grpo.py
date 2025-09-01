@@ -51,12 +51,11 @@ logger.propagate = False
 
 def parse_actions_from_answer(answer_text: str) -> list:
     """Extract structured actions like tool(arg1, arg2)."""
-    action_regex = re.compile(r"(\w+)\(([^)]+)\)")
+    action_regex = re.compile(r"(\w+)\(([^)]*)\)") # Updated regex for no-arg tools
     parsed_actions = []
     for match in action_regex.finditer(answer_text):
-        tool, args = match.group(1).strip(), [
-            arg.strip() for arg in match.group(2).split(",")
-        ]
+        tool, args_str = match.group(1).strip(), match.group(2).strip()
+        args = [arg.strip() for arg in args_str.split(",") if arg.strip()]
         parsed_actions.append({"tool": tool, "args": args})
     return parsed_actions
 
@@ -98,24 +97,13 @@ def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
                 if vulns:
                     sim_state.setdefault("known_vulns", {})[target_host] = vulns
                     step_result.update(
-                        outcome=f"Scan successful. Found: {vulns}", step_reward=0.1
+                        outcome=f"Scan successful. Found: {json.dumps(vulns)}", step_reward=0.1
                     )
                 else:
                     step_result.update(
                         outcome="Scan successful. No new vulnerabilities found.",
                         step_reward=0.05,
                     )
-                # Discover linked hosts with a 20% chance
-                links = scenario.get("network_links", {}).get(target_host, [])
-                if links:
-                    for new_host in links:
-                        if new_host not in sim_state.get("known_hosts", []):
-                            if random.random() < 0.2:
-                                sim_state.setdefault("known_hosts", []).append(new_host)
-                                step_result.update(
-                                    outcome=f"{step_result['outcome']} Also discovered host {new_host}.",
-                                    step_reward=step_result["step_reward"] + 0.2,
-                                )
 
         elif tool == "exploit" and len(args) == 2:
             cve = args[1]
@@ -130,12 +118,10 @@ def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
         elif tool == "read_file" and len(args) == 2:
             file_path = args[1]
             has_admin = sim_state.get("access", {}).get(target_host) == "admin"
-            has_misconfig = (
-                sim_state.get("known_vulns", {})
-                .get(target_host, {})
-                .get("misconfiguration")
-            )
-            if has_admin or has_misconfig:
+            known_vulns = sim_state.get("known_vulns", {}).get(target_host, {})
+            is_readable = known_vulns.get("misconfiguration") and known_vulns.get("file") == file_path
+            
+            if has_admin or is_readable:
                 is_valid_action = True
                 creds_for = (
                     scenario.get("secrets", {})
@@ -217,11 +203,12 @@ _win_loss_stats = {"wins": 0, "losses": 0, "total": 0}
 
 
 def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
-    """Simulation-based reward function."""
+    """Simulation-based reward function with enhanced debugging."""
     global _step_counter, _win_loss_stats
     prompts = kwargs.get("prompts") or [""] * len(completions)
     rewards = []
     batch_wins, batch_total = 0, len(completions)
+    sim_result = {} # Define sim_result here to ensure it's in scope for logging
 
     for i in range(batch_total):
         completion = completions[i]
@@ -240,6 +227,18 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
                 continue
 
             actions = parse_actions_from_answer(answer_match.group(1).strip())
+            
+            # --- START: ADDED FOR DEBUGGING ---
+            # Verbose print statements for one process to avoid log spam
+            if os.environ.get("RANK", "0") == "0":
+                print("\n--- DEBUG: RUNNING SIMULATION ---")
+                if not actions:
+                    print("!!! FAILED TO PARSE ACTIONS !!!")
+                    print(f"COMPLETION: {full_completion}")
+                else:
+                    print(f"ACTIONS: {actions}")
+            # --- END: ADDED FOR DEBUGGING ---
+            
             if not actions:
                 rewards.append(0.0)
                 continue
@@ -247,6 +246,14 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
             sim_result = run_simulation(
                 actions, initial_state, target="DomainController"
             )
+            
+            # --- START: ADDED FOR DEBUGGING ---
+            if os.environ.get("RANK", "0") == "0":
+                print(f"TRACE: {json.dumps(sim_result['trace'], indent=2)}")
+                print(f"FINAL REWARD: {sim_result['final_reward']}")
+                print("--- END DEBUG ---")
+            # --- END: ADDED FOR DEBUGGING ---
+
             rewards.append(sim_result["final_reward"])
 
             if sim_result["is_success"]:
@@ -262,12 +269,26 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
                             "initial_state": initial_state,
                             "simulation_trace": sim_result["trace"],
                             "final_reward": sim_result["final_reward"],
-                            "final_state": sim_result["final_state"],
                         }
                         f.write(json.dumps(log_entry) + "\n")
         except Exception as e:
             logger.debug(f"Error in reward function: {e}")
             rewards.append(0.0)
+            
+        # --- START: ADDED FOR DEBUGGING ---
+        # Log all attempts (successful or not) to a file for later analysis
+        if os.environ.get("RANK", "0") == "0":
+            os.makedirs("completion_samples", exist_ok=True)
+            debug_log_file = os.path.join("completion_samples", "all_completions.jsonl")
+            with open(debug_log_file, "a") as f:
+                log_entry = {
+                    "step": _step_counter,
+                    "completion": full_completion,
+                    "reward": sim_result.get("final_reward", 0.0),
+                    "is_success": sim_result.get("is_success", False),
+                }
+                f.write(json.dumps(log_entry) + "\n")
+        # --- END: ADDED FOR DEBUGGING ---
 
     _win_loss_stats["wins"] += batch_wins
     _win_loss_stats["losses"] += batch_total - batch_wins
@@ -348,7 +369,7 @@ def grpo_function(
             initial_state["agent_start"]["known_hosts"],
         )
         start_host, start_access = next(iter(agent_access.items()))
-        scenario_desc = f"""You are a cybersecurity analyst conducting an authorized penetration test. 
+        scenario_desc = f"""You are a cybersecurity analyst conducting an authorized penetration test.
 Your goal is to achieve admin access on the DomainController.
 
 Current situation:
