@@ -62,7 +62,7 @@ def parse_actions_from_answer(answer_text: str) -> list:
 
 def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
     """
-    Simulation:
+    Stateful simulation that rewards meaningful progress and penalizes useless repeats.
     - scan(host): enumerate vulns, discover host if in scenario
     - exploit(host, cve): admin if vuln matches
     - read_file(host, file): requires known host and admin or misconfig
@@ -70,7 +70,6 @@ def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
     - use_creds(host, creds): requires known host and known creds
     Success = admin on `target`
     """
-
     sim_state = copy.deepcopy(initial_state["agent_start"])
     scenario = initial_state["scenario"]
     total_reward, is_success, trace = 0.0, False, []
@@ -79,116 +78,89 @@ def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
         tool, args = action.get("tool"), action.get("args", [])
         action_str = f"{tool}({', '.join(args)})"
         step_result = {
-            "step": i + 1,
-            "action": action_str,
-            "is_valid": False,
-            "outcome": "Action invalid or failed.",
-            "step_reward": -0.1,
+            "step": i + 1, "action": action_str, "is_valid": False,
+            "outcome": "Action invalid or failed.", "step_reward": -0.1,
         }
 
         is_valid_action = False
         target_host = args[0] if args else ""
 
-        # --- Action handlers ---
+        # --- Action Handlers with State-Change Penalties ---
+
         if tool == "scan" and len(args) == 1:
             if target_host in sim_state.get("known_hosts", []):
                 is_valid_action = True
-                vulns = scenario.get("vulnerabilities", {}).get(target_host)
-                if vulns:
-                    sim_state.setdefault("known_vulns", {})[target_host] = vulns
-                    step_result.update(
-                        outcome=f"Scan successful. Found: {json.dumps(vulns)}", step_reward=0.1
-                    )
+                vulns_in_scenario = scenario.get("vulnerabilities", {}).get(target_host)
+                known_vulns_before = sim_state.get("known_vulns", {}).get(target_host)
+
+                if known_vulns_before == vulns_in_scenario and vulns_in_scenario is not None:
+                    step_result.update(outcome="Scan successful, but no new information found.", step_reward=-0.05)
                 else:
-                    step_result.update(
-                        outcome="Scan successful. No new vulnerabilities found.",
-                        step_reward=0.05,
-                    )
+                    sim_state.setdefault("known_vulns", {})[target_host] = vulns_in_scenario
+                    if vulns_in_scenario:
+                        step_result.update(outcome=f"Scan successful. Found: {json.dumps(vulns_in_scenario)}", step_reward=0.1)
+                    else:
+                        step_result.update(outcome="Scan successful. No new vulnerabilities found.", step_reward=0.05)
 
         elif tool == "exploit" and len(args) == 2:
             cve = args[1]
             if sim_state.get("known_vulns", {}).get(target_host, {}).get("cve") == cve:
                 is_valid_action = True
-                sim_state.setdefault("access", {})[target_host] = "admin"
-                step_result.update(
-                    outcome=f"Exploit successful. Admin access on {target_host}.",
-                    step_reward=0.5,
-                )
+                if sim_state.get("access", {}).get(target_host) == "admin":
+                    step_result.update(outcome=f"Already have admin access on {target_host}.", step_reward=-0.05)
+                else:
+                    sim_state.setdefault("access", {})[target_host] = "admin"
+                    step_result.update(outcome=f"Exploit successful. Admin access on {target_host}.", step_reward=0.5)
 
-        elif tool == "read_file" and len(args) == 2:
-            file_path = args[1]
-            has_admin = sim_state.get("access", {}).get(target_host) == "admin"
-            known_vulns = sim_state.get("known_vulns", {}).get(target_host, {})
-            is_readable = known_vulns.get("misconfiguration") and known_vulns.get("file") == file_path
+        elif tool in ["read_file", "dump_creds"]:
+            # Logic for both read_file and dump_creds as they both yield credentials
+            precondition_met = False
+            if tool == "read_file" and len(args) == 2:
+                file_path = args[1]
+                known_vulns = sim_state.get("known_vulns", {}).get(target_host, {})
+                if known_vulns.get("file") == file_path:
+                    precondition_met = True
+            elif tool == "dump_creds" and len(args) == 1:
+                if sim_state.get("access", {}).get(target_host) == "admin":
+                    precondition_met = True
             
-            if has_admin or is_readable:
+            if precondition_met:
                 is_valid_action = True
-                creds_for = (
-                    scenario.get("secrets", {})
-                    .get(target_host, {})
-                    .get("contains_creds_for")
-                )
+                creds_for = scenario.get("secrets", {}).get(target_host, {}).get("contains_creds_for")
                 if creds_for:
-                    sim_state.setdefault("known_creds", []).append(
-                        f"creds_for_{creds_for}"
-                    )
-                    sim_state.setdefault("known_hosts", []).append(creds_for)
-                    step_result.update(
-                        outcome=f"Read {file_path} successful. Found credentials for {creds_for}.",
-                        step_reward=0.3,
-                    )
+                    new_cred = f"creds_for_{creds_for}"
+                    if new_cred in sim_state.get("known_creds", []):
+                        step_result.update(outcome=f"Action successful, but already knew credentials for {creds_for}.", step_reward=-0.05)
+                    else:
+                        sim_state.setdefault("known_creds", []).append(new_cred)
+                        if creds_for not in sim_state.get("known_hosts", []):
+                             sim_state.setdefault("known_hosts", []).append(creds_for)
+                        reward = 0.4 if tool == "dump_creds" else 0.3
+                        step_result.update(outcome=f"Action successful. Found credentials for {creds_for}.", step_reward=reward)
                 else:
-                    step_result.update(
-                        outcome=f"Read {file_path} successful, but no useful credentials found.",
-                        step_reward=0.1,
-                    )
-
-        elif tool == "dump_creds" and len(args) == 1:
-            if sim_state.get("access", {}).get(target_host) == "admin":
-                is_valid_action = True
-                creds_for = (
-                    scenario.get("secrets", {})
-                    .get(target_host, {})
-                    .get("contains_creds_for")
-                )
-                if creds_for:
-                    sim_state.setdefault("known_creds", []).append(
-                        f"creds_for_{creds_for}"
-                    )
-                    sim_state.setdefault("known_hosts", []).append(creds_for)
-                    step_result.update(
-                        outcome=f"Dumped creds for {creds_for}.",
-                        step_reward=0.4,
-                    )
-                else:
-                    step_result.update(
-                        outcome="Dumped creds, but nothing useful found.",
-                        step_reward=0.1,
-                    )
+                    step_result.update(outcome="Action successful, but no useful credentials found.", step_reward=0.1)
 
         elif tool == "use_creds" and len(args) == 2:
             creds = args[1]
             if creds in sim_state.get("known_creds", []):
                 is_valid_action = True
-                sim_state.setdefault("access", {})[target_host] = "user"
-                step_result.update(
-                    outcome=f"Used {creds}. Gained user access on {target_host}.",
-                    step_reward=0.2,
-                )
+                current_access = sim_state.get("access", {}).get(target_host)
+                if current_access in ["user", "admin"]:
+                    step_result.update(outcome=f"Already have user or admin access on {target_host}.", step_reward=-0.05)
+                else:
+                    sim_state.setdefault("access", {})[target_host] = "user"
+                    step_result.update(outcome=f"Used {creds}. Gained user access on {target_host}.", step_reward=0.2)
 
-        # --- Apply result ---
+        # --- Apply Result ---
         if is_valid_action:
             step_result["is_valid"] = True
-            total_reward += step_result["step_reward"]
-        else:
-            total_reward += step_result["step_reward"]
-
+        total_reward += step_result["step_reward"]
         trace.append(step_result)
 
-        # Check for success
+        # Check for success state
         if sim_state.get("access", {}).get(target) == "admin":
             is_success = True
-            total_reward += 1.0
+            total_reward += 1.0  # Big bonus for winning
             break
 
     return {
@@ -196,7 +168,6 @@ def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
         "is_success": is_success,
         "trace": trace,
     }
-
 
 _step_counter = 0
 _win_loss_stats = {"wins": 0, "losses": 0, "total": 0}
