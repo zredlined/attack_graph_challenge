@@ -26,7 +26,7 @@ warmup_ratio: 0.03
 # GRPO specific parameters
 beta: 0.001
 max_prompt_length: 512
-max_completion_length: 1024
+max_completion_length: 512 
 num_generations: 8
 use_vllm: true
 vllm_device: "cuda:7"  # Set explicit device
