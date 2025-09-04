@@ -31,7 +31,9 @@ os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 class ScriptArguments:
     dataset_id_or_path: str = "meowterspace45/attack-graph-challenge"
     dataset_splits: str = "train"
-    dataset_config_name: str = "simple"
+    dataset_config_name: str = (
+        "simple"  # Or 'complex'
+    )
     tokenizer_name_or_path: str = None
 
 
@@ -51,7 +53,7 @@ logger.propagate = False
 
 def parse_actions_from_answer(answer_text: str) -> list:
     """Extract structured actions like tool(arg1, arg2)."""
-    action_regex = re.compile(r"(\w+)\(([^)]*)\)")  # Updated regex for no-arg tools
+    action_regex = re.compile(r"(\w+)\(([^)]*)\)")  # regex for no-arg tools
     parsed_actions = []
     for match in action_regex.finditer(answer_text):
         tool, args_str = match.group(1).strip(), match.group(2).strip()
@@ -62,233 +64,198 @@ def parse_actions_from_answer(answer_text: str) -> list:
 
 def run_simulation(actions: list, initial_state: dict, target: str) -> dict:
     """
-    Stateful simulation for attack graph, designed to handle multi-step chains.
-    Rewards:
-    - scan(host): first-time discovery
-    - exploit(host, cve): grants admin if scan discovered CVE
-    - read_file(host, file) / dump_creds(host): grants creds (dump requires admin)
-    - use_creds(host, creds): grants user access
+    Stateful simulation that understands placeholders to link tool outputs to inputs.
+    - scan(host): enumerate vulns, discover host if in scenario
+    - exploit(host, cve): admin if vuln matches
+    - read_file(host, file): requires known host and admin or misconfig
+    - dump_creds(host): requires admin, yields creds
+    - use_creds(host, creds): requires known host and known creds
     Success = admin on `target`
     """
-    import copy, json
 
     sim_state = copy.deepcopy(initial_state["agent_start"])
+    executed_actions = set()
     scenario = initial_state["scenario"]
+    total_reward, is_success, trace = 0.0, False, []
 
-    # canonicalize lists -> sets for membership checks
-    sim_state.setdefault("known_hosts", list(sim_state.get("known_hosts", [])))
-    sim_state.setdefault("known_creds", list(sim_state.get("known_creds", [])))
-    sim_state.setdefault("access", dict(sim_state.get("access", {})))
-
-    known_hosts = set(sim_state["known_hosts"])
-    known_creds = set(sim_state["known_creds"])
-    access = dict(sim_state["access"])  # host -> access
-    discovered_cves = {host: set() for host in scenario.get("vulnerabilities", {})}
-
-    total_reward = 0.0
-    trace = []
-    is_success = False
-
-    MAX_STEPS = 200
-    STEP_PENALTY = 0.01
-    SUCCESS_BONUS = 5.0
-    LOOP_PENALTY = -0.5
-    rewarded_events = set()
-    seen_state_hashes = set()
-
-    def state_hash():
-        state_snapshot = {
-            "known_hosts": sorted(list(known_hosts)),
-            "known_creds": sorted(list(known_creds)),
-            "access": {k: access[k] for k in sorted(access.keys())},
-            "discovered_cves": {k: sorted(list(v)) for k, v in discovered_cves.items()},
-        }
-        return json.dumps(state_snapshot, sort_keys=True)
+    # A dictionary to store the results of each step for placeholder substitution
+    step_outputs = {}
 
     for i, action in enumerate(actions):
-        if i >= MAX_STEPS:
-            trace.append({
-                "step": i + 1, "action": str(action), "is_valid": False,
-                "outcome": "Max steps reached. Ending.", "step_reward": -0.5
-            })
-            total_reward += -0.5
-            break
+        tool = action.get("tool", "").lower()
+        args = action.get("args", [])
 
-        tool, args = action.get("tool"), action.get("args", [])
-        action_str = f"{tool}({', '.join(args)})"
-        step_reward = -STEP_PENALTY
-        is_valid_action = False
-        target_host = args[0] if args else ""
-        outcome = "Action invalid or failed."
+        # --- Placeholder Substitution Logic ---
+        # A copy is made to not alter the original action list for logging
+        processed_args = list(args)
+        for j, arg in enumerate(processed_args):
+            if isinstance(arg, str) and arg.startswith("@step"):
+                # Regex to parse "@step<num>_<key>"
+                match = re.match(r"@step(\d+)_(\w+)", arg)
+                if match:
+                    step_num, key = int(match.group(1)), match.group(2)
+                    # Check if the referenced step and key exist in our outputs
+                    if step_num in step_outputs and key in step_outputs[step_num]:
+                        # Substitute the placeholder with the actual value
+                        processed_args[j] = step_outputs[step_num][key]
 
-        def make_event_id(kind, payload):
-            return f"{kind}::{json.dumps(payload, sort_keys=True)}"
-
-        if tool == "scan" and len(args) == 1:
-            vulns_in_scenario = scenario.get("vulnerabilities", {}).get(target_host)
-            payload = {"host": target_host, "vulns": vulns_in_scenario}
-            ev = make_event_id("scan", payload)
-            is_valid_action = True
-            if ev in rewarded_events:
-                step_reward -= 0.05
-                outcome = "Scan repeated; no reward."
-            else:
-                rewarded_events.add(ev)
-                if vulns_in_scenario:
-                    step_reward += 0.1
-                    outcome = f"Scan successful. Found: {json.dumps(vulns_in_scenario)}"
-                    # track discovered CVEs for exploit eligibility
-                    if "cve" in vulns_in_scenario:
-                        discovered_cves[target_host].add(vulns_in_scenario["cve"])
-                else:
-                    step_reward += 0.05
-                    outcome = "Scan successful. No new vulnerabilities found."
-
-        elif tool == "exploit" and len(args) == 2:
-            cve = args[1]
-            if cve in discovered_cves.get(target_host, set()):
-                is_valid_action = True
-                if access.get(target_host) == "admin":
-                    step_reward -= 0.05
-                    outcome = f"Already admin on {target_host}."
-                else:
-                    ev = make_event_id("exploit", {"host": target_host, "cve": cve})
-                    if ev in rewarded_events:
-                        step_reward -= 0.05
-                        outcome = "Exploit replayed; no reward."
-                    else:
-                        rewarded_events.add(ev)
-                        access[target_host] = "admin"
-                        step_reward += 0.5
-                        outcome = f"Exploit successful. Admin on {target_host}."
-            else:
-                is_valid_action = False
-                outcome = "CVE not discovered yet; exploit failed."
-                step_reward -= 0.1
-
-        elif tool == "read_file" and len(args) == 2:
-            file_path = args[1]
-            known_vulns = scenario.get("vulnerabilities", {}).get(target_host, {})
-            if isinstance(known_vulns, dict) and known_vulns.get("file") == file_path:
-                is_valid_action = True
-                creds_for = scenario.get("secrets", {}).get(target_host, {}).get("contains_creds_for")
-                payload = {"tool": tool, "host": target_host, "creds_for": creds_for}
-                ev = make_event_id(tool, payload)
-                if creds_for:
-                    new_cred = f"creds_for_{creds_for}"
-                    if new_cred in known_creds or ev in rewarded_events:
-                        step_reward -= 0.05
-                        outcome = f"Already knew creds for {creds_for} or repeated event."
-                    else:
-                        rewarded_events.add(ev)
-                        known_creds.add(new_cred)
-                        if creds_for not in known_hosts:
-                            known_hosts.add(creds_for)
-                        step_reward += 0.3
-                        outcome = f"Found credentials for {creds_for}."
-                else:
-                    if ev in rewarded_events:
-                        step_reward -= 0.05
-                        outcome = "Repeat: no useful credentials."
-                    else:
-                        rewarded_events.add(ev)
-                        step_reward += 0.1
-                        outcome = "Action successful, but no useful credentials found."
-
-        elif tool == "dump_creds" and len(args) == 1:
-            if access.get(target_host) == "admin":
-                is_valid_action = True
-                creds_for = scenario.get("secrets", {}).get(target_host, {}).get("contains_creds_for")
-                payload = {"tool": tool, "host": target_host, "creds_for": creds_for}
-                ev = make_event_id(tool, payload)
-                if creds_for:
-                    new_cred = f"creds_for_{creds_for}"
-                    if new_cred in known_creds or ev in rewarded_events:
-                        step_reward -= 0.05
-                        outcome = f"Already knew creds for {creds_for} or repeated event."
-                    else:
-                        rewarded_events.add(ev)
-                        known_creds.add(new_cred)
-                        if creds_for not in known_hosts:
-                            known_hosts.add(creds_for)
-                        step_reward += 0.4
-                        outcome = f"Dumped credentials for {creds_for}."
-                else:
-                    if ev in rewarded_events:
-                        step_reward -= 0.05
-                        outcome = "Repeat: no useful credentials."
-                    else:
-                        rewarded_events.add(ev)
-                        step_reward += 0.1
-                        outcome = "Action successful, but no useful credentials found."
-            else:
-                is_valid_action = False
-                step_reward -= 0.1
-                outcome = "Admin access required for dump_creds."
-
-        elif tool == "use_creds" and len(args) == 2:
-            creds = args[1]
-            if creds in known_creds:
-                is_valid_action = True
-                current_access = access.get(target_host)
-                ev = make_event_id("use_creds", {"host": target_host, "creds": creds})
-                if current_access in ["user", "admin"]:
-                    step_reward -= 0.05
-                    outcome = f"Already have access on {target_host}."
-                else:
-                    if ev in rewarded_events:
-                        step_reward -= 0.05
-                        outcome = "Use_creds repeated; no reward."
-                    else:
-                        rewarded_events.add(ev)
-                        access[target_host] = "user"
-                        step_reward += 0.2
-                        outcome = f"Used {creds}. Gained user access on {target_host}."
-            else:
-                is_valid_action = False
-                step_reward -= 0.1
-                outcome = "Unknown creds; use_creds failed."
-
-        total_reward += step_reward
-        trace.append({
+        action_str = f"{tool}({', '.join(processed_args)})"
+        step_result = {
             "step": i + 1,
             "action": action_str,
-            "is_valid": is_valid_action,
-            "outcome": outcome,
-            "step_reward": step_reward,
-        })
+            "is_valid": False,
+            "outcome": "Action invalid or failed.",
+            "step_reward": -0.1,
+        }
 
-        sim_state["known_hosts"] = sorted(list(known_hosts))
-        sim_state["known_creds"] = sorted(list(known_creds))
-        sim_state["access"] = dict(access)
+        if action_str in executed_actions:
+            step_result.update(
+                is_valid=True,
+                outcome="Action repeated. No new information gained.",
+                step_reward=0.0,
+            )
+            total_reward += step_result["step_reward"]
+            trace.append(step_result)
+            continue
 
-        if access.get(target) == "admin":
+        is_valid_action = False
+        target_host = processed_args[0] if processed_args else ""
+
+        # --- Action handlers ---
+        if tool == "scan" and len(processed_args) == 1:
+            if target_host in sim_state.get("known_hosts", []):
+                is_valid_action = True
+                vulns = scenario.get("vulnerabilities", {}).get(target_host)
+                if vulns:
+                    sim_state.setdefault("known_vulns", {})[target_host] = vulns
+                    step_outputs[i + 1] = vulns  # Store scan output
+                    step_result.update(
+                        outcome=f"Scan successful. Found: {json.dumps(vulns)}",
+                        step_reward=0.1,
+                    )
+                else:
+                    step_result.update(
+                        outcome="Scan successful. No new vulnerabilities found.",
+                        step_reward=0.05,
+                    )
+
+        elif tool == "exploit" and len(processed_args) == 2:
+            cve_or_vuln_name = processed_args[1]
+            known_vulns_on_host = sim_state.get("known_vulns", {}).get(target_host, {})
+
+            cve_match = known_vulns_on_host.get("cve") == cve_or_vuln_name
+            misconfig_match = (
+                known_vulns_on_host.get("misconfiguration") == cve_or_vuln_name
+                and cve_or_vuln_name == "Weak-Service-Password"
+            )
+
+            if cve_match or misconfig_match:
+                is_valid_action = True
+                sim_state.setdefault("access", {})[target_host] = "admin"
+                step_result.update(
+                    outcome=f"Exploit successful. Admin access on {target_host}.",
+                    step_reward=0.5,
+                )
+
+        elif tool == "read_file" and len(processed_args) == 2:
+            file_path = processed_args[1]
+            has_admin = sim_state.get("access", {}).get(target_host) == "admin"
+            known_vulns = sim_state.get("known_vulns", {}).get(target_host, {})
+            is_readable = (
+                known_vulns.get("misconfiguration")
+                and known_vulns.get("file") == file_path
+            )
+
+            if has_admin or is_readable:
+                is_valid_action = True
+                creds_for = (
+                    scenario.get("secrets", {})
+                    .get(target_host, {})
+                    .get("contains_creds_for")
+                )
+                if creds_for:
+                    credential_string = f"creds_for_{creds_for}"
+                    sim_state.setdefault("known_creds", []).append(credential_string)
+                    sim_state.setdefault("known_hosts", []).append(creds_for)
+                    step_outputs[i + 1] = {
+                        "creds": credential_string
+                    }  # Store creds output
+                    step_result.update(
+                        outcome=f"Read {file_path} successful. Found creds: {credential_string}.",
+                        step_reward=0.3,
+                    )
+                else:
+                    step_result.update(
+                        outcome=f"Read {file_path} successful, but no useful credentials found.",
+                        step_reward=0.1,
+                    )
+
+        elif tool == "dump_creds" and len(processed_args) == 1:
+            if sim_state.get("access", {}).get(target_host) == "admin":
+                is_valid_action = True
+                creds_for = (
+                    scenario.get("secrets", {})
+                    .get(target_host, {})
+                    .get("contains_creds_for")
+                )
+                if creds_for:
+                    credential_string = f"creds_for_{creds_for}"
+                    sim_state.setdefault("known_creds", []).append(credential_string)
+                    sim_state.setdefault("known_hosts", []).append(creds_for)
+                    step_outputs[i + 1] = {
+                        "creds": credential_string
+                    }  # Store creds output
+                    step_result.update(
+                        outcome=f"Dumped creds. Found: {credential_string}.",
+                        step_reward=0.4,
+                    )
+                else:
+                    step_result.update(
+                        outcome="Dumped creds, but nothing useful found.",
+                        step_reward=0.1,
+                    )
+
+        elif tool == "use_creds" and len(processed_args) == 2:
+            creds = processed_args[1]
+            if creds in sim_state.get("known_creds", []):
+                is_valid_action = True
+                if target_host == target:
+                    sim_state.setdefault("access", {})[target_host] = "admin"
+                    outcome_message = (
+                        f"Used {creds}. Gained ADMIN access on {target_host}."
+                    )
+                else:
+                    sim_state.setdefault("access", {})[target_host] = "user"
+                    outcome_message = (
+                        f"Used {creds}. Gained user access on {target_host}."
+                    )
+                step_result.update(
+                    outcome=outcome_message,
+                    step_reward=0.2,
+                )
+
+        # --- Apply result ---
+        if is_valid_action:
+            step_result["is_valid"] = True
+            total_reward += step_result["step_reward"]
+            if step_result["step_reward"] > 0:
+                executed_actions.add(action_str)
+        else:
+            total_reward += step_result["step_reward"]
+
+        trace.append(step_result)
+
+        # Check for success
+        if sim_state.get("access", {}).get(target) == "admin":
             is_success = True
-            total_reward += SUCCESS_BONUS
-            trace.append({
-                "step": i + 1,
-                "action": "SUCCESS",
-                "is_valid": True,
-                "outcome": f"Admin on {target}. Success bonus applied.",
-                "step_reward": SUCCESS_BONUS
-            })
+            total_reward += 1.0
             break
 
-        # loop detection
-        h = state_hash()
-        if h in seen_state_hashes:
-            total_reward += LOOP_PENALTY
-            trace.append({
-                "step": i + 1,
-                "action": "LOOP_DETECTED",
-                "is_valid": False,
-                "outcome": "Repeated simulator state detected. Ending episode.",
-                "step_reward": LOOP_PENALTY
-            })
-            break
-        seen_state_hashes.add(h)
-
-    return {"final_reward": total_reward, "is_success": is_success, "trace": trace}
+    return {
+        "final_reward": max(total_reward, 0.0),
+        "is_success": is_success,
+        "trace": trace,
+    }
 
 
 _step_counter = 0
@@ -321,8 +288,6 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
 
             actions = parse_actions_from_answer(answer_match.group(1).strip())
 
-            # --- START: ADDED FOR DEBUGGING ---
-            # Verbose print statements for one process to avoid log spam
             if os.environ.get("RANK", "0") == "0":
                 print("\n--- DEBUG: RUNNING SIMULATION ---")
                 if not actions:
@@ -330,7 +295,6 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
                     print(f"COMPLETION: {full_completion}")
                 else:
                     print(f"ACTIONS: {actions}")
-            # --- END: ADDED FOR DEBUGGING ---
 
             if not actions:
                 rewards.append(0.0)
@@ -340,12 +304,10 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
                 actions, initial_state, target="DomainController"
             )
 
-            # --- START: ADDED FOR DEBUGGING ---
             if os.environ.get("RANK", "0") == "0":
                 print(f"TRACE: {json.dumps(sim_result['trace'], indent=2)}")
                 print(f"FINAL REWARD: {sim_result['final_reward']}")
                 print("--- END DEBUG ---")
-            # --- END: ADDED FOR DEBUGGING ---
 
             rewards.append(sim_result["final_reward"])
 
@@ -368,8 +330,6 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
             logger.debug(f"Error in reward function: {e}")
             rewards.append(0.0)
 
-        # --- START: ADDED FOR DEBUGGING ---
-        # Log all attempts (successful or not) to a file for later analysis
         if os.environ.get("RANK", "0") == "0":
             os.makedirs("completion_samples", exist_ok=True)
             debug_log_file = os.path.join("completion_samples", "all_completions.jsonl")
@@ -381,7 +341,6 @@ def attack_success_reward_func(completions: list[str], **kwargs) -> list[float]:
                     "is_success": sim_result.get("is_success", False),
                 }
                 f.write(json.dumps(log_entry) + "\n")
-        # --- END: ADDED FOR DEBUGGING ---
 
     _win_loss_stats["wins"] += batch_wins
     _win_loss_stats["losses"] += batch_total - batch_wins
@@ -462,6 +421,8 @@ def grpo_function(
             initial_state["agent_start"]["known_hosts"],
         )
         start_host, start_access = next(iter(agent_access.items()))
+
+        # --- prompt template w/instructions ---
         scenario_desc = f"""You are a cybersecurity analyst conducting an authorized penetration test.
 Your goal is to achieve admin access on the DomainController.
 
@@ -470,14 +431,22 @@ Current situation:
 - Known hosts: {', '.join(known_hosts)}
 - Network contains: WebServer, DBServer, DomainController
 
-Available actions:
-- scan(host)
+Available actions and their outputs:
+- scan(host) -> outputs: 'cve', 'file'
 - exploit(host, cve)
-- read_file(host, file)
-- dump_creds(host)
+- read_file(host, file) -> outputs: 'creds'
+- dump_creds(host) -> outputs: 'creds'
 - use_creds(host, creds)
 
+IMPORTANT: To use information from a previous step, use the placeholder format '@step<number>_<key>'.
+Example of a logical chain:
+1. scan(WebServer)
+2. exploit(WebServer, @step1_cve)
+3. dump_creds(WebServer)
+4. use_creds(DBServer, @step3_creds)
+
 Plan your attack step by step to achieve the goal."""
+
         r1_prefix = [
             {
                 "role": "system",

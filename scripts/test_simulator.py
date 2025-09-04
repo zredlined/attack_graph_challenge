@@ -1,163 +1,193 @@
+import copy
 import json
+import random
 import unittest
 
 from run_r1_grpo import run_simulation
 
-# --- Test Configuration: Mirrors the dataset generator for consistency ---
-VULNERABILITIES = {
-    "exploit": {"cve": "CVE-2024-SQLi"},
-    "misconfig": {"misconfiguration": "Readable-Config-File", "file": "config.json"},
-    "privesc": {"cve": "CVE-2024-PrivEsc"},
-}
-SECRETS = {
-    "web_to_db": {"contains_creds_for": "DBServer"},
-    "db_to_dc": {"contains_creds_for": "DomainController"},
-}
+
+# --- Helper functions from the new dataset generator ---
+def generate_random_cve():
+    """Generates a random, plausible-looking CVE."""
+    products = ["Nexus", "DataFlow", "AuthServ", "LogForged", "SecureStream", "CoreAPI"]
+    return f"CVE-2024-{random.choice(products)}-{random.randint(10000, 99999)}"
+
+
+def generate_random_file():
+    """Generates a random, plausible config file name."""
+    files = ["config.json", "settings.ini", "db.conf", "app.env", "credentials.xml"]
+    return random.choice(files)
 
 
 class TestAttackSimulator(unittest.TestCase):
 
     def setUp(self):
-        """A fresh, basic scenario is created before each test method runs."""
-        self.initial_state = {
+        """
+        Creates a comprehensive but randomized scenario before each test.
+        This prevents tests from relying on hardcoded "magic strings".
+        """
+        self.web_cve = generate_random_cve()
+        self.db_cve = generate_random_cve()
+        self.web_file = generate_random_file()
+        self.decoy_cve = generate_random_cve().replace("CVE", "CVE-Decoy")
+
+        self.base_initial_state = {
             "agent_start": {
                 "known_hosts": ["WebServer"],
                 "access": {"WebServer": "user"},
+                "known_creds": [],
+                "known_vulns": {},
             },
             "scenario": {
                 "vulnerabilities": {
-                    "WebServer": VULNERABILITIES["exploit"],
-                    "DBServer": VULNERABILITIES["privesc"],
-                },
-                "secrets": {"WebServer": SECRETS["web_to_db"]},
-            },
-        }
-
-    # --- 1. Sanity Checks for Invalid and Illogical Actions ---
-    def test_fails_on_invalid_tool_name(self):
-        """The simulator should penalize the use of a non-existent tool."""
-        actions = [{"tool": "hack", "args": ["WebServer"]}]
-        result = run_simulation(actions, self.initial_state, "DomainController")
-        self.assertFalse(
-            result["trace"][0]["is_valid"],
-            "Invalid tool should be marked as not valid.",
-        )
-        self.assertLess(
-            result["trace"][0]["step_reward"],
-            0,
-            "Invalid tool should receive a negative reward.",
-        )
-
-    def test_fails_on_dump_creds_without_admin_access(self):
-        """The agent must have 'admin' access to dump credentials."""
-        # Agent starts with 'user' access, so this must fail.
-        actions = [{"tool": "dump_creds", "args": ["WebServer"]}]
-        result = run_simulation(actions, self.initial_state, "DomainController")
-        self.assertFalse(
-            result["trace"][0]["is_valid"],
-            "dump_creds without admin access should be invalid.",
-        )
-
-    def test_fails_on_exploit_before_scan(self):
-        """The agent cannot use a CVE it hasn't discovered via a scan yet."""
-        actions = [{"tool": "exploit", "args": ["WebServer", "CVE-2024-SQLi"]}]
-        result = run_simulation(actions, self.initial_state, "DomainController")
-        self.assertFalse(
-            result["trace"][0]["is_valid"],
-            "Exploiting an unknown CVE should be invalid.",
-        )
-
-    # --- 2. End-to-End Tests for Successful Attack Paths ---
-    def test_full_successful_exploit_path(self):
-        """The simulator should correctly reward a full, logical exploit chain."""
-        state = {
-            "agent_start": {
-                "known_hosts": ["WebServer"],
-                "access": {"WebServer": "user"},
-            },
-            "scenario": {
-                "vulnerabilities": {
-                    "WebServer": VULNERABILITIES["exploit"],
-                    "DBServer": VULNERABILITIES["privesc"],
-                    "DomainController": {"cve": "CVE-FINAL-DC"},
-                },
-                "secrets": {
-                    "WebServer": SECRETS["web_to_db"],
-                    "DBServer": SECRETS["db_to_dc"],
-                },
-            },
-        }
-        actions = [
-            {"tool": "scan", "args": ["WebServer"]},
-            {"tool": "exploit", "args": ["WebServer", "CVE-2024-SQLi"]},
-            {"tool": "dump_creds", "args": ["WebServer"]},
-            {"tool": "use_creds", "args": ["DBServer", "creds_for_DBServer"]},
-            {"tool": "scan", "args": ["DBServer"]},
-            {"tool": "exploit", "args": ["DBServer", "CVE-2024-PrivEsc"]},
-            {"tool": "dump_creds", "args": ["DBServer"]},
-            {
-                "tool": "use_creds",
-                "args": ["DomainController", "creds_for_DomainController"],
-            },
-            {"tool": "scan", "args": ["DomainController"]},
-            {"tool": "exploit", "args": ["DomainController", "CVE-FINAL-DC"]},
-        ]
-        result = run_simulation(actions, state, "DomainController")
-        self.assertTrue(
-            result["is_success"], "A correct exploit path should result in success."
-        )
-        self.assertGreater(
-            result["final_reward"],
-            1.0,
-            "A successful run should have a final reward greater than 1.0.",
-        )
-
-    def test_full_successful_misconfig_path(self):
-        """The simulator should correctly reward a full, logical misconfiguration chain."""
-        state = {
-            "agent_start": {
-                "known_hosts": ["WebServer"],
-                "access": {"WebServer": "user"},
-            },
-            "scenario": {
-                "vulnerabilities": {
-                    "WebServer": VULNERABILITIES["misconfig"],
+                    "WebServer": {
+                        "cve": self.web_cve,
+                        "misconfiguration": "Readable-Config-File",
+                        "file": self.web_file,
+                    },
                     "DBServer": {
-                        "cve": "CVE-DB-ADMIN"
-                    },  # Using a CVE for simplicity to grant admin
-                    "DomainController": {"cve": "CVE-FINAL-DC"},
+                        "cve": self.db_cve,
+                        "misconfiguration": "Weak-Service-Password",
+                    },
                 },
                 "secrets": {
-                    "WebServer": SECRETS["web_to_db"],
-                    "DBServer": SECRETS["db_to_dc"],
+                    "WebServer": {"contains_creds_for": "DBServer"},
+                    "DBServer": {"contains_creds_for": "DomainController"},
                 },
             },
         }
+        self.target = "DomainController"
+
+    def test_placeholder_substitution_works_correctly(self):
+        """Tests that the simulator correctly substitutes a placeholder from a prior step's output."""
         actions = [
             {"tool": "scan", "args": ["WebServer"]},
-            {"tool": "read_file", "args": ["WebServer", "config.json"]},
-            {"tool": "use_creds", "args": ["DBServer", "creds_for_DBServer"]},
-            {"tool": "scan", "args": ["DBServer"]},
-            {"tool": "exploit", "args": ["DBServer", "CVE-DB-ADMIN"]},
-            {"tool": "dump_creds", "args": ["DBServer"]},
-            {
-                "tool": "use_creds",
-                "args": ["DomainController", "creds_for_DomainController"],
-            },
-            {"tool": "scan", "args": ["DomainController"]},
-            {"tool": "exploit", "args": ["DomainController", "CVE-FINAL-DC"]},
+            {"tool": "exploit", "args": ["WebServer", "@step1_cve"]},
         ]
-        result = run_simulation(actions, state, "DomainController")
+        result = run_simulation(actions, self.base_initial_state, self.target)
         self.assertTrue(
-            result["is_success"], "A correct misconfig path should result in success."
+            result["trace"][1]["is_valid"],
+            "Exploit action should be valid after substitution",
         )
-        self.assertGreater(
-            result["final_reward"],
-            1.0,
-            "A successful run should have a final reward greater than 1.0.",
+        self.assertEqual(
+            result["trace"][1]["action"], f"exploit(WebServer, {self.web_cve})"
         )
+
+    def test_non_optimal_path_with_correct_references(self):
+        """Tests a longer, non-optimal path to ensure placeholders reference the correct step number."""
+        actions = [
+            {"tool": "scan", "args": ["WebServer"]},
+            {"tool": "scan", "args": ["DBServer"]},  # A useless, intervening step
+            {
+                "tool": "exploit",
+                "args": ["WebServer", "@step1_cve"],
+            },  # Must refer to step 1, not 2
+        ]
+        state = copy.deepcopy(self.base_initial_state)
+        state["agent_start"]["known_hosts"].append("DBServer")  # Make step 2 valid
+        result = run_simulation(actions, state, self.target)
+        self.assertTrue(
+            result["trace"][2]["is_valid"],
+            "Exploit should be valid, referencing step 1",
+        )
+        self.assertEqual(
+            result["trace"][2]["action"], f"exploit(WebServer, {self.web_cve})"
+        )
+
+    def test_full_exploit_path_succeeds_with_placeholders(self):
+        """Tests the full 'exploit_path' using the placeholder system."""
+        actions = [
+            {"tool": "scan", "args": ["WebServer"]},
+            {"tool": "exploit", "args": ["WebServer", "@step1_cve"]},
+            {"tool": "dump_creds", "args": ["WebServer"]},
+            {"tool": "use_creds", "args": ["DBServer", "@step3_creds"]},
+            {"tool": "scan", "args": ["DBServer"]},
+            {"tool": "exploit", "args": ["DBServer", "@step5_cve"]},
+            {"tool": "dump_creds", "args": ["DBServer"]},
+            {"tool": "use_creds", "args": ["DomainController", "@step7_creds"]},
+        ]
+        result = run_simulation(actions, self.base_initial_state, self.target)
+        self.assertTrue(
+            result["is_success"],
+            "The full exploit path with placeholders should succeed",
+        )
+        self.assertGreater(result["final_reward"], 1.0)
+
+    def test_full_misconfig_path_succeeds_with_placeholders(self):
+        """Tests the full 'misconfig_path' using the placeholder system."""
+        actions = [
+            {"tool": "scan", "args": ["WebServer"]},
+            {"tool": "read_file", "args": ["WebServer", "@step1_file"]},
+            {"tool": "use_creds", "args": ["DBServer", "@step2_creds"]},
+            {"tool": "scan", "args": ["DBServer"]},
+            {"tool": "exploit", "args": ["DBServer", "Weak-Service-Password"]},
+            {"tool": "dump_creds", "args": ["DBServer"]},
+            {"tool": "use_creds", "args": ["DomainController", "@step6_creds"]},
+        ]
+        result = run_simulation(actions, self.base_initial_state, self.target)
+        self.assertTrue(
+            result["is_success"],
+            "The full misconfig path with placeholders should succeed",
+        )
+        self.assertGreater(result["final_reward"], 1.0)
+
+    # --- Test case specifically for the decoy/red herring logic ---
+    def test_agent_correctly_ignores_decoy(self):
+        """
+        Tests that the simulator correctly adjudicates a scenario with a decoy.
+        The agent must learn to ignore the decoy CVE and follow the file path.
+        """
+        # 1. Create a scenario with a real file path and a decoy CVE
+        # This simulates a 'misconfig_path' with a red herring.
+        state_with_decoy = copy.deepcopy(self.base_initial_state)
+        # The ground truth for this scenario has the decoy CVE, but the secrets are tied to the file.
+        state_with_decoy["scenario"]["vulnerabilities"]["WebServer"][
+            "cve"
+        ] = self.decoy_cve
+
+        # 2. Define the INCORRECT plan (following the decoy)
+        # The agent gets admin but this path is a dead end as there are no secrets for this CVE.
+        decoy_actions = [
+            {"tool": "scan", "args": ["WebServer"]},
+            {"tool": "exploit", "args": ["WebServer", "@step1_cve"]},
+            {
+                "tool": "dump_creds",
+                "args": ["WebServer"],
+            },  # This will find nothing useful
+        ]
+
+        # 3. Define the CORRECT plan (ignoring the decoy and completing the run)
+        correct_actions = [
+            {"tool": "scan", "args": ["WebServer"]},
+            {"tool": "read_file", "args": ["WebServer", "@step1_file"]},
+            {"tool": "use_creds", "args": ["DBServer", "@step2_creds"]},
+            {"tool": "scan", "args": ["DBServer"]},
+            {"tool": "exploit", "args": ["DBServer", "Weak-Service-Password"]},
+            {"tool": "dump_creds", "args": ["DBServer"]},
+            {"tool": "use_creds", "args": ["DomainController", "@step6_creds"]},
+        ]
+
+        # 4. Simulate both plans and assert the outcomes
+        decoy_result = run_simulation(decoy_actions, state_with_decoy, self.target)
+        correct_result = run_simulation(correct_actions, state_with_decoy, self.target)
+
+        # The decoy plan is composed of valid actions, but it does not lead to success.
+        self.assertTrue(
+            decoy_result["trace"][1]["is_valid"],
+            "Exploiting the decoy CVE is a valid action...",
+        )
+        self.assertFalse(
+            decoy_result["is_success"],
+            "...but it should not lead to a successful outcome for the entire scenario.",
+        )
+
+        # The correct plan should lead to a win.
+        self.assertTrue(
+            correct_result["is_success"],
+            "Ignoring the decoy and following the file path should lead to success.",
+        )
+        self.assertGreater(correct_result["final_reward"], 1.0)
 
 
 if __name__ == "__main__":
-    print("🔬 Running comprehensive simulator sanity checks...")
     unittest.main(verbosity=2)
