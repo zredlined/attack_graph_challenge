@@ -125,7 +125,7 @@ python scripts/dataset_generation/generate_attack_dataset.py \
 ## Resources & Further Reading
 
 ### Project Resources
-- [GitHub Repository](https://github.com/yourusername/grpo-attack-graph-challenge)
+- [Attack Graph Challenge GitHub Repository](https://github.com/zredlined/attack_graph_challenge)
 - [Hugging Face Dataset](https://huggingface.co/datasets/meowterspace45/attack-graph-challenge)
 
 ### Key Papers & References
