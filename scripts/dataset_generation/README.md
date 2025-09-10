@@ -1,164 +1,114 @@
-Attack Graph Challenge: An RL Scenario for Autonomous Intrusion
-This project provides a dataset of simulated cybersecurity scenarios designed for training autonomous AI agents using Reinforcement Learning. The core task is a descriptive, tool-based intrusion challenge where an agent must learn to traverse a network's attack graph to achieve a final objective.
+# GRPO Attack Graph Challenge - AI Agent Cybersecurity Reasoning Training
 
-The environment emphasizes exploration, sequential tool usage, and state management under conditions of incomplete information, mirroring real-world security challenges.
+Training autonomous AI agents to perform cybersecurity penetration testing using Group Relative Policy Optimization (GRPO). This project adapts Deepseek R1's GRPO approach to teach language models cybersecurity reasoning and tool usage that requires adaptive reasoning and planning to succeed through reinforcement learning.
 
-How the Challenge Works
-The agent's objective is to autonomously navigate a simplified corporate network and gain administrative control. Each scenario starts from a randomized state, presenting a unique attack graph for the agent to solve.
+## Overview
 
-The Goal
-The single, unambiguous goal for every scenario is to achieve administrative access on the network's DomainController.
+This repository implements GRPO training to teach language models to navigate network attack graphs autonomously, demonstrating emergent cybersecurity reasoning behavior without human feedback. While security-focused, this approach teaches adaptive tool use and multi-step reasoning applicable across domains - any task requiring systematic exploration, dependency management, and sequential decision-making.
 
-The Environment
-The simulated network consists of three interconnected hosts:
+The agent learns to:
+- Explore networks under "fog of war" conditions
+- Execute multi-step attack sequences with tool dependencies
+- Filter signal from noise by ignoring decoy vulnerabilities ("red herrings")
+- Achieve Domain Admin access through systematic penetration testing
 
-WebServer: The public-facing entry point.
-DBServer: A backend database server.
-DomainController: The central authentication server and the final target.
-A key feature of the challenge is the "fog of war." The agent begins with incomplete information about the network. It does not know which vulnerabilities or secrets exist and must actively explore the environment to discover the viable attack path.
+## How Success is Measured
 
-The Agent's Toolkit (Actions)
-The agent has a predefined set of tools it can use to interact with the environment:
+An agent's generated attack plan is evaluated by a stateful simulator. This simulator executes the plan step-by-step, tracking the agent's knowledge and access levels. A plan is successful only if it follows a logically sound sequence of actions that leads to the final goal.
 
-scan(host): Probes a host to discover open ports, services, and potential vulnerabilities or readable files.
-exploit(host, cve): Attempts to exploit a specific CVE on a target host to gain administrative privileges on that machine.
-read_file(host, file): Reads the contents of a file, which may contain credentials or other useful information.
-password_spray(host, creds): Attempts to use a known set of credentials to log into a service on a target host.
-dump_creds(host): If the agent has admin access on a host, this action extracts any credentials stored on it.
-The Core Learning Task
-This challenge is designed to be non-trivial. An agent cannot simply guess the solution; it must learn a sophisticated policy to succeed. Specifically, the agent must learn to:
+The simulator enforces key rules:
+- **Prerequisites**: Tools like `exploit` cannot be used on a vulnerability the agent has not yet discovered via a `scan`.
+- **Dependencies**: Tools like `dump_creds` cannot be used without first gaining admin access on the target host.
+- **Accuracy**: The agent must use the specific information (e.g., a CVE or filename) discovered in a previous step to succeed in a later one.
 
-Explore and Discover: Effectively use tools like scan to overcome the "fog of war," map the attack surface, and uncover the hidden state of the environment.
-Execute Dependent Sequences: Construct and follow multi-step "kill chains" where the success of each action is dependent on the outcome of previous ones (e.g., must gain admin access before using dump_creds).
-Manage State and Knowledge: Build and maintain an internal representation of the network graph, including credentials found, access levels gained, and known vulnerabilities, to inform future decisions.
-Filter Signal from Noise: Learn to identify and ignore irrelevant information ("red herrings"), such as useless files or dead-end network ports, and focus only on the clues that advance its position on the attack graph.
-Attack Paths
-The challenge includes multiple solution paths that the agent must learn to identify and execute:
+## The Core Challenge: Learning to Reason
 
-1. Exploit Path
-Uses CVE-based vulnerabilities to gain system access:
+The agent is trained to generate a complete, multi-step plan in a single pass. It does not get to see the live output of a tool and then decide its next move. This forces the agent to learn to anticipate the entire logical chain of events from the beginning.
 
-WebServer: Exploit a randomly generated CVE (e.g., CVE-2024-Nexus-12345)
-DBServer: Use a privilege escalation vulnerability (e.g., CVE-2025-CoreAPI-PrivEsc-67890)
-2. Misconfiguration Path
-Leverages security misconfigurations:
+### The Placeholder System
 
-WebServer: Read exposed configuration files containing credentials
-DBServer: Exploit weak service passwords
-3. Hybrid Path (Complex Difficulty Only)
-Combines exploitation and misconfiguration techniques:
+To achieve this, the agent learns to use a placeholder syntax to link steps together. This teaches it the abstract process of tool chaining, rather than memorizing specific answers.
 
-WebServer: CVE exploitation
-DBServer: Misconfiguration abuse
-The Dataset
-The dataset contains scenarios with dynamically generated vulnerabilities, ensuring each instance presents unique challenges while maintaining consistent structural patterns for learning.
+**Example of a Successful Plan:**
+```
+<think>
+I will scan the WebServer first. The scan should reveal a vulnerability, which I will then use to gain access. After that, I will dump credentials to pivot to the next server.
+</think>
+<answer>
+1. scan(WebServer)
+2. exploit(WebServer, @step1_cve)
+3. dump_creds(WebServer)
+4. use_creds(DBServer, @step3_creds)
+</answer>
+```
 
-Key Features
-Dynamic CVE Generation: Realistic-looking CVE identifiers are randomly generated using products like "Nexus," "DataFlow," "AuthServ," etc.
-Randomized Configuration Files: Misconfiguration vulnerabilities reference plausible config files like config.json, settings.ini, db.conf, etc.
-Adaptive Noise: Irrelevant information (red herrings) that varies by difficulty level to test the agent's ability to focus on relevant signals.
-Generating the Dataset
-Use the generate_attack_dataset.py script to create datasets:
+### The "Aha!" Moment: Ignoring Red Herrings
 
-Basic Usage
-bash
-# Generate simple difficulty dataset
-python generate_attack_dataset.py --difficulty simple --num_samples 50000
+In more complex scenarios, the scan tool will reveal both a correct path (e.g., a readable config file) and a decoy (a fake, non-functional CVE). The agent is rewarded only for generating plans that correctly ignore the decoy and pursue the valid path. This is the core test of its reasoning ability.
 
-# Generate complex difficulty dataset  
-python generate_attack_dataset.py --difficulty complex --num_samples 50000
-Advanced Options
-bash
-# Generate and upload to Hugging Face
-python generate_attack_dataset.py \
-    --num_samples 500000 \
-    --difficulty complex \
-    --output_file my_dataset.jsonl \
-    --upload_to_hf \
-    --hf_username your_username \
-    --dataset_name attack_graph_challenge
-Command Line Parameters
---num_samples: Number of scenarios to generate (default: 50000)
---difficulty: Difficulty level - simple or complex (default: simple)
---output_file: Output filename (auto-generated if not specified)
---upload_to_hf: Upload dataset to Hugging Face Hub
---hf_username: Your Hugging Face username
---dataset_name: Dataset name for HF Hub (default: attack_graph_challenge)
-Difficulty Levels
-Simple Difficulty
-Attack Paths: 2 paths (exploit_path, misconfig_path)
-Noise: Static, predictable distractors
-Purpose: Foundational learning and validation of core mechanics
-Complex Difficulty
-Attack Paths: 3 paths (adds hybrid_path)
-Noise: Randomized distractors from pools of useless ports and files
-Purpose: Tests generalization and adaptability to unpredictable environments
-Recommended Training Methodology
-To effectively train an agent while managing complexity, we recommend a two-stage curriculum learning approach:
+## The Experiment: Learning Cybersecurity Reasoning
 
-Stage 1: Foundational Learning (Baseline)
-Dataset: Use the simple difficulty setting
-Goal: Train the agent on this baseline dataset first to learn core mechanics
-Validation: Ensures the agent can overcome "fog of war" and execute basic multi-step attacks
-Stage 2: Generalization & Adaptability
-Dataset: Use the complex difficulty setting
-Goal: Fine-tune the Stage 1 agent on more difficult scenarios
-Purpose: Tests ability to generalize to new attack patterns and adapt to randomized environments
-Record Structure
-The dataset is a JSON Lines (.jsonl) file where each line contains:
+This project demonstrates how an AI agent can learn complex cybersecurity reasoning through reinforcement learning, developing strategies that weren't explicitly programmed.
 
-target (string): The goal - always "DomainController"
-initial_state (JSON string): Serialized JSON object describing the complete scenario state
-The initial_state Object
-agent_start: Agent's initial conditions (access levels, known hosts, credentials)
-scenario: Puzzle layout including vulnerabilities, secrets, and noise
-metadata: Supplementary information like the solution_path
-Example Record
-json
-{
-  "agent_start": {
-    "access": {
-      "WebServer": "user"
-    },
-    "known_hosts": ["WebServer"],
-    "known_creds": []
-  },
-  "scenario": {
-    "vulnerabilities": {
-      "WebServer": {
-        "cve": "CVE-2024-DataFlow-45612"
-      },
-      "DBServer": {
-        "cve": "CVE-2025-SecureStream-PrivEsc-78934"
-      }
-    },
-    "secrets": {
-      "WebServer": {
-        "contains_creds_for": "DBServer"
-      },
-      "DBServer": {
-        "contains_creds_for": "DomainController"
-      }
-    },
-    "noise": {
-      "WebServer": {
-        "files": ["temp_notes.txt"]
-      },
-      "DBServer": {
-        "open_ports": [9001]
-      }
-    }
-  },
-  "metadata": {
-    "solution_path": "exploit_path"
-  }
-}
-Dataset Statistics
-After generation, the script provides statistics showing the distribution of solution paths across the dataset. When using --path_bias, the output will reflect your specified distribution:
+### Training Results
 
-Distribution of solution paths:
-misconfig_path    0.800000
-exploit_path      0.100000  
-hybrid_path       0.100000
-This helps verify that your bias settings are working correctly and enables you to create datasets tailored for specific research objectives.
+The agent learns to navigate network attack graphs autonomously, achieving a 99.2% average win rate in the final 20 training steps. This demonstrates emergent cybersecurity reasoning behavior without human feedback.
 
+**Key Learning Phases**:
+- **Exploration**: Agent learns basic tool syntax and valid actions
+- **Strategy Discovery**: Develops "shotgun" approach to combat red herrings  
+- **Mastery**: Refines strategies into optimal attack paths
+
+## Training Progress & Results
+
+This table reflects the actual learning curve observed during training, showing how the agent develops increasingly sophisticated strategies.
+
+| Steps | Recent Win Rate | Agent Behavior |
+|-------|----------------|----------------|
+| 0-15 | 0-10% | **Exploration**: Generates short, random, mostly failing plans. |
+| 15-50 | 10-60% | **"Aha!" Moment**: Discovers that long, chained plans yield high rewards. Win rate rapidly increases. |
+| 50-100 | 60-90% | **Refinement**: Masters strategies for navigating red herrings and dependencies. |
+| 100-160 | 90-99.2% | **Mastery**: Achieves 99.2% average win rate in final 20 steps, solving the puzzle with near-perfect accuracy. |
+
+### Training Metrics Visualization
+
+![Tensorboard Training Results](images/tensorboard_results.png)
+
+The comprehensive training metrics show the agent's progression through all phases of learning, from initial exploration to strategic mastery.
+
+![Reward and Completion Length](images/tensorboard_reward.png)
+
+The reward curve demonstrates the classic RL learning pattern, while completion length shows how the agent first develops verbose "shotgun" strategies before refining them into efficient, optimal attack paths.
+
+## Generating Datasets for Training
+
+To train the agent on cybersecurity scenarios, you can generate datasets with different difficulty levels and path distributions.
+
+```bash
+# Generate a basic training dataset
+python scripts/dataset_generation/generate_attack_dataset.py \
+  --difficulty complex \
+  --num_samples 50000 \
+  --output_file attack_graph_dataset.jsonl
+
+# Generate a dataset with custom path distribution
+python scripts/dataset_generation/generate_attack_dataset.py \
+  --difficulty complex \
+  --path_bias 0.3 0.4 0.3 \
+  --num_samples 50000 \
+  --output_file balanced_dataset.jsonl
+```
+
+## Resources & Further Reading
+
+### Project Resources
+- [GitHub Repository](https://github.com/yourusername/grpo-attack-graph-challenge)
+- [Hugging Face Dataset](https://huggingface.co/datasets/meowterspace45/attack-graph-challenge)
+
+### Key Papers & References
+- [DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning](https://arxiv.org/abs/2501.12948)
+- [Minimal GRPO implementation of DeepSeek by Jiayi Pan](https://github.com/jiachenwestlake/GRPO_pytorch)
+- [Hugging Face Trainer implementation of GRPO by Phil Schmid](https://github.com/philschmid/grpo-trainer)
+
+### Acknowledgments
+This project builds upon the groundbreaking work of the DeepSeek team in developing GRPO for reasoning tasks, and adapts their approach to the cybersecurity domain. Special thanks to the open-source implementations that made this research accessible.
