@@ -102,11 +102,11 @@ This table reflects the actual learning curve observed during training, showing 
 
 ### Training Metrics Visualization
 
-![Tensorboard Training Results](path/to/tensorboard_image.png)
+![Tensorboard Training Results](images/tensorboard_results.png)
 
 The comprehensive training metrics show the agent's progression through all phases of learning, from initial exploration to strategic mastery.
 
-![Reward and Completion Length](path/to/reward_curve.png)
+![Reward and Completion Length](images/tensorboard_reward.png)
 
 The reward curve demonstrates the classic RL learning pattern, while completion length shows how the agent first develops verbose "shotgun" strategies before refining them into efficient, optimal attack paths.
 
@@ -130,7 +130,6 @@ The reward curve demonstrates the classic RL learning pattern, while completion 
 ### Project Resources
 
 - [Attack Graph Challenge GitHub Repository](https://github.com/NVIDIA/grpo-attack-graph-challenge)
-- [Hugging Face Dataset](https://huggingface.co/datasets/nvidia/attack-graph-scenarios)
 
 ### NeMo Data Designer
 
