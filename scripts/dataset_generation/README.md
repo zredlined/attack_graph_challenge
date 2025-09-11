@@ -1,114 +1,163 @@
-# GRPO Attack Graph Challenge - AI Agent Cybersecurity Reasoning Training
+# Attack Graph Dataset Generation
 
-Training autonomous AI agents to perform cybersecurity penetration testing using Group Relative Policy Optimization (GRPO). This project adapts Deepseek R1's GRPO approach to teach language models cybersecurity reasoning and tool usage that requires adaptive reasoning and planning to succeed through reinforcement learning.
+Generate synthetic cybersecurity attack scenarios for training attack graph models. This tool creates randomized penetration testing scenarios with varying difficulty levels and attack paths.
 
-## Overview
+## Use Case
 
-This repository implements GRPO training to teach language models to navigate network attack graphs autonomously, demonstrating emergent cybersecurity reasoning behavior without human feedback. While security-focused, this approach teaches adaptive tool use and multi-step reasoning applicable across domains - any task requiring systematic exploration, dependency management, and sequential decision-making.
+Training effective attack graph models requires diverse, realistic scenarios that cover different attack vectors, vulnerability types, and network configurations. This generator creates synthetic attack scenarios where an agent must navigate from initial access (WebServer) to a target system (DomainController) through various attack paths:
 
-The agent learns to:
-- Explore networks under "fog of war" conditions
-- Execute multi-step attack sequences with tool dependencies
-- Filter signal from noise by ignoring decoy vulnerabilities ("red herrings")
-- Achieve Domain Admin access through systematic penetration testing
+- **Exploit Path**: CVE-based vulnerabilities requiring exploitation
+- **Misconfiguration Path**: Configuration weaknesses and credential theft
+- **Hybrid Path**: Combination of exploits and misconfigurations
 
-## How Success is Measured
+Each scenario includes realistic noise (red herrings, irrelevant ports, decoy vulnerabilities) to train models on decision-making and path planning.
 
-An agent's generated attack plan is evaluated by a stateful simulator. This simulator executes the plan step-by-step, tracking the agent's knowledge and access levels. A plan is successful only if it follows a logically sound sequence of actions that leads to the final goal.
+## Quick Start
 
-The simulator enforces key rules:
-- **Prerequisites**: Tools like `exploit` cannot be used on a vulnerability the agent has not yet discovered via a `scan`.
-- **Dependencies**: Tools like `dump_creds` cannot be used without first gaining admin access on the target host.
-- **Accuracy**: The agent must use the specific information (e.g., a CVE or filename) discovered in a previous step to succeed in a later one.
-
-## The Core Challenge: Learning to Reason
-
-The agent is trained to generate a complete, multi-step plan in a single pass. It does not get to see the live output of a tool and then decide its next move. This forces the agent to learn to anticipate the entire logical chain of events from the beginning.
-
-### The Placeholder System
-
-To achieve this, the agent learns to use a placeholder syntax to link steps together. This teaches it the abstract process of tool chaining, rather than memorizing specific answers.
-
-**Example of a Successful Plan:**
-```
-<think>
-I will scan the WebServer first. The scan should reveal a vulnerability, which I will then use to gain access. After that, I will dump credentials to pivot to the next server.
-</think>
-<answer>
-1. scan(WebServer)
-2. exploit(WebServer, @step1_cve)
-3. dump_creds(WebServer)
-4. use_creds(DBServer, @step3_creds)
-</answer>
-```
-
-### The "Aha!" Moment: Ignoring Red Herrings
-
-In more complex scenarios, the scan tool will reveal both a correct path (e.g., a readable config file) and a decoy (a fake, non-functional CVE). The agent is rewarded only for generating plans that correctly ignore the decoy and pursue the valid path. This is the core test of its reasoning ability.
-
-## The Experiment: Learning Cybersecurity Reasoning
-
-This project demonstrates how an AI agent can learn complex cybersecurity reasoning through reinforcement learning, developing strategies that weren't explicitly programmed.
-
-### Training Results
-
-The agent learns to navigate network attack graphs autonomously, achieving a 99.2% average win rate in the final 20 training steps. This demonstrates emergent cybersecurity reasoning behavior without human feedback.
-
-**Key Learning Phases**:
-- **Exploration**: Agent learns basic tool syntax and valid actions
-- **Strategy Discovery**: Develops "shotgun" approach to combat red herrings  
-- **Mastery**: Refines strategies into optimal attack paths
-
-## Training Progress & Results
-
-This table reflects the actual learning curve observed during training, showing how the agent develops increasingly sophisticated strategies.
-
-| Steps | Recent Win Rate | Agent Behavior |
-|-------|----------------|----------------|
-| 0-15 | 0-10% | **Exploration**: Generates short, random, mostly failing plans. |
-| 15-50 | 10-60% | **"Aha!" Moment**: Discovers that long, chained plans yield high rewards. Win rate rapidly increases. |
-| 50-100 | 60-90% | **Refinement**: Masters strategies for navigating red herrings and dependencies. |
-| 100-160 | 90-99.2% | **Mastery**: Achieves 99.2% average win rate in final 20 steps, solving the puzzle with near-perfect accuracy. |
-
-### Training Metrics Visualization
-
-![Tensorboard Training Results](images/tensorboard_results.png)
-
-The comprehensive training metrics show the agent's progression through all phases of learning, from initial exploration to strategic mastery.
-
-![Reward and Completion Length](images/tensorboard_reward.png)
-
-The reward curve demonstrates the classic RL learning pattern, while completion length shows how the agent first develops verbose "shotgun" strategies before refining them into efficient, optimal attack paths.
-
-## Generating Datasets for Training
-
-To train the agent on cybersecurity scenarios, you can generate datasets with different difficulty levels and path distributions.
+Generate 50,000 attack scenarios:
 
 ```bash
-# Generate a basic training dataset
-python scripts/dataset_generation/generate_attack_dataset.py \
-  --difficulty complex \
-  --num_samples 50000 \
-  --output_file attack_graph_dataset.jsonl
-
-# Generate a dataset with custom path distribution
-python scripts/dataset_generation/generate_attack_dataset.py \
-  --difficulty complex \
-  --path_bias 0.3 0.4 0.3 \
-  --num_samples 50000 \
-  --output_file balanced_dataset.jsonl
+python design_attack_dataset.py
 ```
 
-## Resources & Further Reading
+This creates `attack_graph_complex_50000.jsonl` with randomized scenarios in ~90 seconds.
 
-### Project Resources
-- [GitHub Repository](https://github.com/yourusername/grpo-attack-graph-challenge)
-- [Hugging Face Dataset](https://huggingface.co/datasets/meowterspace45/attack-graph-challenge)
+## Configuration Options
 
-### Key Papers & References
-- [DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning](https://arxiv.org/abs/2501.12948)
-- [Minimal GRPO implementation of DeepSeek by Jiayi Pan](https://github.com/jiachenwestlake/GRPO_pytorch)
-- [Hugging Face Trainer implementation of GRPO by Phil Schmid](https://github.com/philschmid/grpo-trainer)
+### Difficulty Levels
 
-### Acknowledgments
-This project builds upon the groundbreaking work of the DeepSeek team in developing GRPO for reasoning tasks, and adapts their approach to the cybersecurity domain. Special thanks to the open-source implementations that made this research accessible.
+**Simple Mode** (`difficulty="simple"`):
+- 2 attack paths: exploit_path, misconfig_path
+- Minimal noise (fixed port 8080 on DBServer)
+- Straightforward vulnerability patterns
+
+**Complex Mode** (`difficulty="complex"`):
+- 3 attack paths: exploit_path, misconfig_path, hybrid_path
+- Dynamic noise (random hosts and ports)
+- Red herrings (decoy CVEs, useless files)
+
+### Customization
+
+```python
+from design_attack_dataset import generate_attack_graph_dataset
+
+# Custom distribution favoring misconfigurations
+data = generate_attack_graph_dataset(
+    num_samples=10000,
+    difficulty="complex", 
+    path_bias=[0.1, 0.8, 0.1]  # [exploit, misconfig, hybrid]
+)
+
+# Simple scenarios for testing
+test_data = generate_attack_graph_dataset(
+    num_samples=100, 
+    difficulty="simple"
+)
+```
+
+## Output Format
+
+Each record contains a cybersecurity scenario:
+
+```json
+{
+  "target": "DomainController",
+  "initial_state": {
+    "agent_start": {
+      "access": {"WebServer": "user"},
+      "known_hosts": ["WebServer"],
+      "known_creds": []
+    },
+    "scenario": {
+      "vulnerabilities": {
+        "WebServer": {"misconfiguration": "Readable-Config-File", "file": "web.config"},
+        "DBServer": {"misconfiguration": "Weak-Service-Password"}
+      },
+      "secrets": {
+        "WebServer": {"contains_creds_for": "DBServer"},
+        "DBServer": {"contains_creds_for": "DomainController"}
+      },
+      "noise": {"DBServer": {"open_ports": [8080]}}
+    },
+    "metadata": {"solution_path": "misconfig_path"}
+  }
+}
+```
+
+## Prerequisites and Setup
+
+This tool uses **NeMo Data Designer** for efficient statistical data generation. NeMo Data Designer provides purpose-built synthetic data generation capabilities with consistent, reliable results at scale.
+
+### 1. Deploy NeMo Data Designer
+
+Follow the [deployment guide](https://docs.nvidia.com/nemo/microservices/latest/generate-synthetic-data/index.html) to set up Data Designer locally. Ensure the service runs on `http://localhost:8080`.
+
+### 2. Install Dependencies
+
+```bash
+pip install nemo-microservices[data-designer] pandas
+```
+
+### 3. Verify Setup
+
+Check that Data Designer is running:
+```bash
+curl http://localhost:8080/health
+```
+
+## Modifying Parameters
+
+### Adding New Components
+
+Edit `design_attack_dataset.py` to customize the data pools:
+
+```python
+# Add new CVE products
+CVE_PRODUCTS = ["Nexus", "DataFlow", "AuthServ", "YourProduct"]
+
+# Add configuration files
+CONFIG_FILES = ["config.json", "your_config.yml", "app.properties"]
+
+# Add distractor files
+USELESS_FILES = ["backup.zip", "readme.txt", "debug.log"]
+```
+
+### Changing Defaults
+
+Modify the main section for different default parameters:
+
+```python
+if __name__ == "__main__":
+    data = generate_attack_graph_dataset(
+        num_samples=25000,      # Change default size
+        difficulty="simple"     # Change default difficulty
+    )
+```
+
+### Adding New Attack Paths
+
+To add new scenario types, extend the path logic in the post-processing section and update the attack path samplers.
+
+## Performance
+
+- **50,000 records**: ~90 seconds
+- **Memory usage**: Minimal (streaming generation)
+- **Output size**: ~2-4MB per 1,000 records
+- **Distribution**: Even spread across attack paths (33/33/33 for complex mode)
+
+## How It Works
+
+This generator leverages key NeMo Data Designer features to create consistent, high-quality synthetic data:
+
+**Statistical Sampling Columns**: Generate randomized components like CVE numbers, product names, and configuration files using uniform and categorical distributions. This ensures realistic variety without the overhead of LLM generation.
+
+**Expression Columns**: Use Jinja templates to combine sampled values into structured formats like CVE identifiers (`CVE-2024-{{ product }}-{{ number }}`) and build complex JSON structures deterministically.
+
+**Post-Processing Logic**: After statistical generation, Python logic constructs the final attack scenarios based on the original attack graph rules, ensuring each scenario follows realistic penetration testing patterns.
+
+This approach combines the speed and consistency of statistical sampling with the flexibility of template-based data construction, generating 50,000 records in ~90 seconds while maintaining logical consistency across all attack scenarios.
+
+## Resources
+
+- **NeMo Data Designer Examples**: https://github.com/NVIDIA/GenerativeAIExamples/tree/main/nemo/NeMo-Data-Designer/intro-tutorials
+- **Documentation**: https://docs.nvidia.com/nemo/microservices/latest/generate-synthetic-data/index.html
