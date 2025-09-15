@@ -1,20 +1,13 @@
-# PyTorch and utilities
-torch==2.5.1
-tensorboard
-setuptools<71.0.0
+# Install NeMo RL directly from the NVIDIA GitHub repository
+git+https://github.com/NVIDIA/NeMo-RL.git
 
-# Flash attention for efficient transformers
-flash-attn
+# For dataset generation
+nemo-microservices[data-designer]
+pandas
 
-# Hugging Face ecosystem
-transformers==4.48.1
-datasets==3.1.0
-accelerate==1.3.0
-hf-transfer==0.1.9
-trl==0.14.0
-
-# Distributed training
-deepspeed==0.15.4
-
-# Fast generation with vLLM
-vllm==0.7.0
+# For running the training script and environment
+datasets
+omegaconf
+ray[serve]
+torch
+transformers
