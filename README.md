@@ -16,7 +16,7 @@ While the application is security-focused, the technique of using reinforcement 
 
 ## Dataset Generation with NeMo Data Designer
 
-High-quality training data is generated using **NeMo Data Designer**, which provides capabilities for creating consistent, scalable, and statistically varied synthetic scenarios.
+High-quality training scenarios are generated using **NeMo Data Designer**, which provides capabilities for creating consistent, scalable, and statistically varied synthetic scenarios.
 
 ### Quick Start: Generate Your Own
 
@@ -32,7 +32,7 @@ python dataset_generation/design_attack_dataset.py
 
 For convenience, a dataset containing 50,000 complex scenarios already generated with NeMo Data Designer is available for download from the Hugging Face Hub. This allows you to skip the dataset generation step.
 
-**[➡️ Download from Hugging Face Datasets](https://www.google.com/search?q=httpshttps://huggingface.co/datasets/meowterspace45/attack_graph_challenge)**
+**[➡️ Download from Hugging Face Datasets](https://huggingface.co/datasets/meowterspace45/attack_graph_challenge)**
 
 ## How Success is Measured
 
@@ -103,14 +103,14 @@ The reward curve demonstrates the classic RL learning pattern, while completion 
 
   - **Base Model**: Qwen 2.5-3B with supervised fine-tuning (SFT)
   - **Training Method**: Group Relative Policy Optimization (GRPO)
-  - **Minimum Requirements**: 8x L40s GPUs for full training
+  - **Recommended Requirements**: 8x L40s GPUs for full parameters training
   - **Alternative Setup**: Single GPU training with PEFT/QLoRA (coming soon)
 
 ### Setup and Training
 
 1.  **Clone this repository:**
     ```bash
-    git clone https://github.com/your-username/attack-graph-challenge.git
+    git clone https://github.com/zredlined/attack-graph-challenge.git
     cd attack-graph-challenge
     ```
 2.  **Create and activate a Python virtual environment:**
@@ -142,6 +142,5 @@ The reward curve demonstrates the classic RL learning pattern, while completion 
 ### Key Papers & References
 
   - [NVIDIA NeMo RL Framework](https://github.com/NVIDIA-NeMo/RL)
-  - Group Relative Policy Optimization for reinforcement learning
   - [Minimal GRPO implementation](https://github.com/jiayi-pan/minimal-grpo) by Jiayi Pan
   - [Hugging Face Trainer implementation of GRPO](https://huggingface.co/blog/grpo) by Phil Schmid
